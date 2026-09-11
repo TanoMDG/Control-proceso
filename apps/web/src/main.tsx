@@ -7,6 +7,7 @@ const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1";
 function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [token, setToken] = useState(sessionStorage.getItem("access_token") ?? "");
   const [message, setMessage] = useState("Ingrese con una cuenta habilitada por ADMIN.");
 
   async function login(event: FormEvent) {
@@ -22,7 +23,18 @@ function App() {
     }
     const token = await response.json() as { access_token: string };
     sessionStorage.setItem("access_token", token.access_token);
-    setMessage("Sesion iniciada. Los modulos operativos se habilitan en sus fases formales.");
+    setToken(token.access_token);
+    setMessage("Sesion iniciada. Puede imprimir formularios de transicion FT.");
+  }
+
+  async function printForm(module: string) {
+    const response = await fetch(`${apiUrl}/exportar?modulo=${module}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+      setMessage("No fue posible obtener el formulario.");
+      return;
+    }
+    const url = URL.createObjectURL(await response.blob());
+    window.open(url, "_blank", "noopener");
   }
 
   return <main>
@@ -30,11 +42,15 @@ function App() {
       <p className="eyebrow">F0 · Fundamentos</p>
       <h1>Control de Proceso</h1>
       <p className="subtitle">Preparacion de Pasta</p>
-      <form onSubmit={login}>
+      {!token ? <form onSubmit={login}>
         <label>Usuario<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
         <label>Contrasena<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label>
         <button type="submit">Iniciar sesion</button>
-      </form>
+      </form> : <section className="forms">
+        <h2>Formularios de transicion</h2>
+        <p>Imprima y complete fecha, hora, turno y responsable. La carga posterior conserva esos datos originales.</p>
+        {["m1", "m2", "m3", "m6", "m10"].map((module) => <button key={module} onClick={() => printForm(module)}>Imprimir {module.toUpperCase()}</button>)}
+      </section>}
       <p className="message" role="status">{message}</p>
     </section>
   </main>;
