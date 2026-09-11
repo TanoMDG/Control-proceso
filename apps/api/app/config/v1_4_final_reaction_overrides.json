@@ -1,0 +1,10 @@
+{
+  "D01": {
+    "registro_escalamiento": "R1 (registrar ajuste y motivo); si la siguiente medición consecutiva de la misma variable+punto continúa fuera de rango → ESCALADO a SUPERVISIÓN.",
+    "motivo": "Prevalece Especificación Técnica Consolidada v1.4 FINAL"
+  },
+  "D10": {
+    "registro_escalamiento": "SUPERVISIÓN si se repite por segunda medición consecutiva o por decisión manual.",
+    "motivo": "Prevalece Especificación Técnica Consolidada v1.4 FINAL"
+  }
+}
