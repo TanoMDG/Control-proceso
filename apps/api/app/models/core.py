@@ -191,6 +191,35 @@ class ShiftClose(Base):
     __table_args__ = (UniqueConstraint("fecha_operativa", "turno_codigo", "id_linea", name="uq_turno_cierre"),)
 
 
+class OperationalRecord(Base, Timestamped):
+    __tablename__ = "registro_operativo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    modulo: Mapped[str] = mapped_column(String(10), nullable=False)
+    client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), default="BORRADOR", nullable=False)
+    motivo_anulacion: Mapped[str | None] = mapped_column(String(300))
+    origen_dato: Mapped[str] = mapped_column(String(20), nullable=False)
+    fecha_operativa: Mapped[date] = mapped_column(Date, nullable=False)
+    turno_codigo: Mapped[str] = mapped_column(String(30), nullable=False)
+    instante_medicion: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    cargado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    id_responsable: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persona.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_digitador: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    creado_por: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    cerrado_por: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    cerrado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    datos: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    motivo_correccion: Mapped[str | None] = mapped_column(String(300))
+    __table_args__ = (
+        UniqueConstraint("modulo", "client_uuid", name="uq_registro_operativo_cliente"),
+        CheckConstraint("estado IN ('BORRADOR', 'CERRADO', 'VALIDADO', 'ANULADO')", name="ck_registro_operativo_estado"),
+        CheckConstraint("origen_dato IN ('digital_directo', 'papel_digitado')", name="ck_registro_operativo_origen"),
+        CheckConstraint("revision > 0", name="ck_registro_operativo_revision"),
+        Index("ix_registro_operativo_consulta", "modulo", "fecha_operativa", "turno_codigo"),
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "auditoria"
     id: Mapped[uuid.UUID] = uuid_pk()

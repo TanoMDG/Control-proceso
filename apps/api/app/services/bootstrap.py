@@ -9,9 +9,10 @@ from app.models.core import Permission, Person, Role, User
 from app.services.security import hash_password
 
 BASE_PERMISSIONS = {
-    "CARGA": [("M11", "ver", "propio_sector"), ("M12", "ver", "propio_sector")],
-    "SUPERVISION": [("M11", "ver", "todo"), ("M12", "ver", "todo"), ("M15", "ver", "todo")],
+    "CARGA": [("M0", "ver", "propio_sector"), ("M0", "crear", "propio_sector"), ("M11", "ver", "propio_sector"), ("M12", "ver", "propio_sector")],
+    "SUPERVISION": [("M0", "ver", "todo"), ("M0", "crear", "todo"), ("M11", "ver", "todo"), ("M12", "ver", "todo"), ("M15", "ver", "todo")],
     "ADMIN": [
+        ("M0", "ver", "todo"), ("M0", "crear", "todo"),
         ("M11", "ver", "todo"), ("M11", "crear", "todo"), ("M11", "editar", "todo"),
         ("M12", "ver", "todo"), ("M12", "crear", "todo"), ("M12", "editar", "todo"),
         ("M15", "ver", "todo"), ("M15", "crear", "todo"), ("M15", "editar", "todo"),

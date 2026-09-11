@@ -6,12 +6,13 @@ from tempfile import NamedTemporaryFile
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AuditLog, Catalog, ImportResult, ImportRun, Limit, LimitVersion, Permission, Person, PersonPosition, ProductionCalendar, Role, SyncConflict, SystemParameterVersion, User
-from app.schemas import (AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RoleOutput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AuditLog, Catalog, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, SyncConflict, SystemParameterVersion, User
+from app.schemas import (AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RoleOutput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
@@ -37,9 +38,77 @@ def audit_payload(model) -> dict:
     return {column.name: str(value) if value is not None else None for column, value in ((column, getattr(model, column.name)) for column in model.__table__.columns) if column.name not in {"password_hash"}}
 
 
+def expected_operational_date(turno_codigo: str, instante_medicion: datetime) -> date:
+    if instante_medicion.tzinfo is None:
+        raise HTTPException(status_code=422, detail="instante_medicion debe incluir zona horaria")
+    normalized_shift = turno_codigo.replace("_", "-").upper()
+    measurement_date = instante_medicion.date()
+    if normalized_shift in {"20-04", "20 A 04", "NOCHE"} and instante_medicion.hour < 4:
+        return measurement_date - timedelta(days=1)
+    return measurement_date
+
+
+def printable_form(modulo: str) -> str:
+    labels = {
+        "m1": "M1 Molienda", "m2": "M2 Madirex", "m3": "M3 Lecho fluido / K-Sider / Silos",
+        "m6": "M6 Paradas", "m10": "M10 Espesores",
+    }
+    title = labels.get(modulo.lower())
+    if title is None:
+        raise HTTPException(status_code=404, detail="Formulario inexistente")
+    pages = ["Prensa 1", "Prensa 2", "Prensa 3"] if modulo.lower() == "m10" else [""]
+    page_html = "".join(
+        f"<section class='page'><header><strong>Control de Proceso</strong><span>{title}</span><span>{page}</span></header>"
+        "<p>Fecha operativa: __________ Turno: __________ Responsable: __________ Formulario: __________</p>"
+        "<table><thead><tr><th>Hora</th><th>Variable / medicion</th><th>Valor</th><th>Observaciones</th><th>Firma</th></tr></thead>"
+        "<tbody>" + "<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>" * 12 + "</tbody></table>"
+        "<footer>Conserve fecha, hora, turno y responsable originales. Digitacion: usuario y fecha/hora.</footer></section>"
+        for page in pages
+    )
+    return "<html><head><style>@page{size:A4 landscape;margin:12mm}.page{page-break-after:always;font-family:Arial}header{display:flex;justify-content:space-between;border-bottom:2px solid #111;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #333;height:26px;text-align:left;padding:3px}footer{margin-top:10px;font-size:11px}</style></head><body>" + page_html + "</body></html>"
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok", "phase": "F0"}
+
+
+@router.get("/exportar", response_class=HTMLResponse)
+def export_blank_form(modulo: str, _: User = Depends(require_permission("M0", "ver"))) -> str:
+    return printable_form(modulo)
+
+
+@router.post("/registros/{modulo}", response_model=OperationalRecordOutput, status_code=201)
+def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: User = Depends(require_permission("M0", "crear")), db: Session = Depends(get_db)):
+    module = modulo.upper()
+    if module not in {"M1", "M2", "M3", "M6", "M10"}:
+        raise HTTPException(status_code=404, detail="Modulo no habilitado para carga diferida")
+    if db.get(Person, payload.id_responsable) is None:
+        raise HTTPException(status_code=422, detail="Responsable inexistente")
+    if payload.fecha_operativa != expected_operational_date(payload.turno_codigo, payload.instante_medicion):
+        raise HTTPException(status_code=422, detail="La fecha operativa no corresponde al turno y momento de medicion originales")
+    existing = db.scalar(select(OperationalRecord).where(OperationalRecord.modulo == module, OperationalRecord.client_uuid == payload.client_uuid))
+    if existing is not None:
+        return existing
+    record = OperationalRecord(
+        modulo=module,
+        client_uuid=payload.client_uuid,
+        estado="BORRADOR",
+        origen_dato="papel_digitado",
+        fecha_operativa=payload.fecha_operativa,
+        turno_codigo=payload.turno_codigo,
+        instante_medicion=payload.instante_medicion,
+        id_responsable=payload.id_responsable,
+        id_usuario_digitador=actor.id,
+        creado_por=actor.id,
+        datos=payload.datos,
+    )
+    db.add(record)
+    db.flush()
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="DIGITACION_PAPEL", after=audit_payload(record), reason="Carga diferida desde formulario en papel")
+    db.commit()
+    db.refresh(record)
+    return record
 
 
 @router.post("/auth/login", response_model=TokenOutput)
