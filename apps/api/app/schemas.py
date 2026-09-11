@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -225,3 +225,29 @@ class ImportPreview(BaseModel):
     missing_sheets: list[str]
     rows_by_sheet: dict[str, int]
     errors: list[str]
+
+
+class DeferredRecordInput(BaseModel):
+    client_uuid: UUID = Field(default_factory=uuid4)
+    fecha_operativa: date
+    turno_codigo: str = Field(min_length=1, max_length=30)
+    instante_medicion: datetime
+    id_responsable: UUID
+    datos: dict = Field(default_factory=dict)
+
+
+class OperationalRecordOutput(ORMModel):
+    id: UUID
+    modulo: str
+    client_uuid: UUID
+    estado: str
+    origen_dato: str
+    fecha_operativa: date
+    turno_codigo: str
+    instante_medicion: datetime
+    cargado_en: datetime
+    id_responsable: UUID
+    id_usuario_digitador: UUID | None
+    creado_por: UUID
+    revision: int
+    datos: dict
