@@ -195,6 +195,7 @@ class OperationalRecord(Base, Timestamped):
     __tablename__ = "registro_operativo"
     id: Mapped[uuid.UUID] = uuid_pk()
     modulo: Mapped[str] = mapped_column(String(10), nullable=False)
+    sector: Mapped[str] = mapped_column(String(40), nullable=False)
     client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     estado: Mapped[str] = mapped_column(String(20), default="BORRADOR", nullable=False)
     motivo_anulacion: Mapped[str | None] = mapped_column(String(300))
@@ -218,6 +219,33 @@ class OperationalRecord(Base, Timestamped):
         CheckConstraint("revision > 0", name="ck_registro_operativo_revision"),
         Index("ix_registro_operativo_consulta", "modulo", "fecha_operativa", "turno_codigo"),
     )
+
+
+class DeviationEvent(Base, Timestamped):
+    __tablename__ = "evento_desvio"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_registro: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("registro_operativo.id", ondelete="RESTRICT"), nullable=False)
+    campo: Mapped[str] = mapped_column(String(80), nullable=False)
+    id_limite: Mapped[str] = mapped_column(String(10), ForeignKey("limite.id", ondelete="RESTRICT"), nullable=False)
+    id_limite_version: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("limite_version.id", ondelete="RESTRICT"), nullable=False)
+    id_desvio: Mapped[str] = mapped_column(String(10), ForeignKey("plan_reaccion.id_desvio", ondelete="RESTRICT"), nullable=False)
+    clave_idempotencia: Mapped[str] = mapped_column(String(180), unique=True, nullable=False)
+    secuencia_clave: Mapped[str] = mapped_column(String(180), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), default="ABIERTO", nullable=False)
+    valor_actual: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (CheckConstraint("estado IN ('ABIERTO', 'EN_TRATAMIENTO', 'VERIFICADO', 'VENCIDO', 'ESCALADO', 'CERRADO', 'INVALIDADO')", name="ck_evento_desvio_estado"), Index("ix_evento_desvio_estado", "estado", "id_desvio"))
+
+
+class DeviationHistory(Base):
+    __tablename__ = "evento_desvio_historial"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_evento: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("evento_desvio.id", ondelete="CASCADE"), nullable=False)
+    estado_anterior: Mapped[str | None] = mapped_column(String(20))
+    estado_nuevo: Mapped[str] = mapped_column(String(20), nullable=False)
+    comentario: Mapped[str | None] = mapped_column(Text)
+    id_usuario: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class AuditLog(Base):
