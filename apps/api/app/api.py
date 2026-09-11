@@ -11,10 +11,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AuditLog, Catalog, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, SyncConflict, SystemParameterVersion, User
-from app.schemas import (AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RoleOutput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftReceipt, SyncConflict, SystemParameterVersion, User
+from app.schemas import (AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
+from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
@@ -68,6 +69,16 @@ def printable_form(modulo: str) -> str:
     return "<html><head><style>@page{size:A4 landscape;margin:12mm}.page{page-break-after:always;font-family:Arial}header{display:flex;justify-content:space-between;border-bottom:2px solid #111;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #333;height:26px;text-align:left;padding:3px}footer{margin-top:10px;font-size:11px}</style></head><body>" + page_html + "</body></html>"
 
 
+def assert_record_access(db: Session, actor: User, sector: str, *, write: bool = False) -> None:
+    role = get_role(db, actor).nombre
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="Permiso operativo insuficiente")
+    if role == "CARGA" and actor.sector != sector:
+        raise HTTPException(status_code=403, detail="CARGA solo opera su sector")
+    if write and role == "CARGA" and sector != actor.sector:
+        raise HTTPException(status_code=403, detail="CARGA solo escribe su sector")
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok", "phase": "F0"}
@@ -79,10 +90,12 @@ def export_blank_form(modulo: str, _: User = Depends(require_permission("M0", "v
 
 
 @router.post("/registros/{modulo}", response_model=OperationalRecordOutput, status_code=201)
-def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: User = Depends(require_permission("M0", "crear")), db: Session = Depends(get_db)):
+def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     module = modulo.upper()
-    if module not in {"M1", "M2", "M3", "M6", "M10"}:
-        raise HTTPException(status_code=404, detail="Modulo no habilitado para carga diferida")
+    if module not in MODULE_SECTOR:
+        raise HTTPException(status_code=404, detail="Modulo operativo inexistente")
+    sector = MODULE_SECTOR[module]
+    assert_record_access(db, actor, sector, write=True)
     if db.get(Person, payload.id_responsable) is None:
         raise HTTPException(status_code=422, detail="Responsable inexistente")
     if payload.fecha_operativa != expected_operational_date(payload.turno_codigo, payload.instante_medicion):
@@ -90,25 +103,153 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     existing = db.scalar(select(OperationalRecord).where(OperationalRecord.modulo == module, OperationalRecord.client_uuid == payload.client_uuid))
     if existing is not None:
         return existing
+    data = normalized_data(db, module, payload.datos, payload.fecha_operativa)
     record = OperationalRecord(
         modulo=module,
+        sector=sector,
         client_uuid=payload.client_uuid,
-        estado="BORRADOR",
-        origen_dato="papel_digitado",
+        estado="BORRADOR", origen_dato=payload.origen_dato,
         fecha_operativa=payload.fecha_operativa,
         turno_codigo=payload.turno_codigo,
         instante_medicion=payload.instante_medicion,
         id_responsable=payload.id_responsable,
-        id_usuario_digitador=actor.id,
+        id_usuario_digitador=actor.id if payload.origen_dato == "papel_digitado" else None,
         creado_por=actor.id,
-        datos=payload.datos,
+        datos=data,
     )
     db.add(record)
     db.flush()
-    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="DIGITACION_PAPEL", after=audit_payload(record), reason="Carga diferida desde formulario en papel")
+    evaluate_record(db, record, actor.id)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="DIGITACION_PAPEL" if payload.origen_dato == "papel_digitado" else "ALTA", after=audit_payload(record), reason="Carga diferida desde formulario en papel" if payload.origen_dato == "papel_digitado" else None)
     db.commit()
     db.refresh(record)
     return record
+
+
+@router.get("/registros/{modulo}", response_model=list[OperationalRecordOutput])
+def list_records(modulo: str, desde: date | None = None, hasta: date | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    module, sector = modulo.upper(), MODULE_SECTOR.get(modulo.upper())
+    if sector is None:
+        raise HTTPException(status_code=404, detail="Modulo operativo inexistente")
+    assert_record_access(db, actor, sector)
+    role = get_role(db, actor).nombre
+    statement = select(OperationalRecord).where(OperationalRecord.modulo == module)
+    if role == "CARGA":
+        lower = date.today() - timedelta(days=6)
+        if desde and desde < lower:
+            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
+        statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa >= lower)
+    if desde: statement = statement.where(OperationalRecord.fecha_operativa >= desde)
+    if hasta: statement = statement.where(OperationalRecord.fecha_operativa <= hasta)
+    return list(db.scalars(statement.order_by(OperationalRecord.instante_medicion.desc())))
+
+
+@router.put("/registros/{modulo}/{record_id}", response_model=OperationalRecordOutput)
+def correct_record(modulo: str, record_id: UUID, payload: RecordUpdateInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    record = db.get(OperationalRecord, record_id)
+    if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
+    assert_record_access(db, actor, record.sector, write=True)
+    role = get_role(db, actor).nombre
+    if record.revision != payload.revision:
+        conflict = SyncConflict(tabla="registro_operativo", id_registro=record.id, client_uuid=record.client_uuid, revision_cliente={"revision": payload.revision, "datos": payload.datos}, version_servidor={"revision": record.revision, "datos": record.datos})
+        db.add(conflict); db.commit()
+        raise HTTPException(status_code=409, detail="Revision desactualizada; conflicto creado")
+    if role == "CARGA" and (record.estado != "BORRADOR" or record.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores")
+    if record.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
+    before = audit_payload(record)
+    record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa), payload.motivo_correccion, record.revision + 1
+    evaluate_record(db, record, actor.id)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion)
+    db.commit(); db.refresh(record); return record
+
+
+@router.post("/registros/{modulo}/{record_id}/cerrar", response_model=OperationalRecordOutput)
+def close_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    record = db.get(OperationalRecord, record_id)
+    if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
+    assert_record_access(db, actor, record.sector, write=True)
+    if record.estado != "BORRADOR": raise HTTPException(status_code=422, detail="Solo se cierran borradores")
+    role = get_role(db, actor).nombre
+    if role == "CARGA" and record.creado_por != actor.id: raise HTTPException(status_code=403, detail="CARGA solo cierra sus registros")
+    record.estado, record.cerrado_por, record.cerrado_en = "CERRADO", actor.id, datetime.now(timezone.utc)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CIERRE", after=audit_payload(record), reason=payload.comentario)
+    db.commit(); db.refresh(record); return record
+
+
+@router.post("/registros/{modulo}/{record_id}/validar", response_model=OperationalRecordOutput)
+def validate_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor: User = Depends(require_supervision), db: Session = Depends(get_db)):
+    record = db.get(OperationalRecord, record_id)
+    if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
+    if record.estado != "CERRADO": raise HTTPException(status_code=422, detail="Solo se validan registros cerrados")
+    record.estado = "VALIDADO"; write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="VALIDACION", after=audit_payload(record), reason=payload.comentario)
+    db.commit(); db.refresh(record); return record
+
+
+@router.post("/registros/{modulo}/{record_id}/anular", response_model=OperationalRecordOutput)
+def void_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor: User = Depends(require_supervision), db: Session = Depends(get_db)):
+    record = db.get(OperationalRecord, record_id)
+    if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
+    if record.estado == "ANULADO": raise HTTPException(status_code=422, detail="Registro ya anulado")
+    record.estado, record.motivo_anulacion = "ANULADO", payload.comentario
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="ANULACION", after=audit_payload(record), reason=payload.comentario)
+    db.commit(); db.refresh(record); return record
+
+
+def event_with_deadline(event: DeviationEvent, db: Session) -> DeviationEvent:
+    if event.estado in {"ABIERTO", "EN_TRATAMIENTO", "VERIFICADO"} and event.vence_en and event.vence_en < datetime.now(timezone.utc): event.estado = "VENCIDO"
+    return event
+
+
+@router.get("/desvios", response_model=list[DeviationOutput])
+def list_deviations(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    role = get_role(db, actor).nombre
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
+    statement = select(DeviationEvent).join(OperationalRecord, OperationalRecord.id == DeviationEvent.id_registro)
+    if role == "CARGA": statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa >= date.today() - timedelta(days=6))
+    events = [event_with_deadline(event, db) for event in db.scalars(statement.order_by(DeviationEvent.created_at.desc()))]
+    db.commit()
+    return events
+
+
+def transition_deviation(event_id: UUID, action: str, payload: RecordActionInput, actor: User, db: Session):
+    event = db.get(DeviationEvent, event_id)
+    if event is None: raise HTTPException(status_code=404, detail="Desvio inexistente")
+    record = db.get(OperationalRecord, event.id_registro); assert record is not None
+    assert_record_access(db, actor, record.sector, write=True)
+    role, previous = get_role(db, actor).nombre, event.estado
+    target = {"tratar": "EN_TRATAMIENTO", "verificar": "VERIFICADO", "cerrar": "CERRADO"}.get(action)
+    if target is None: raise HTTPException(status_code=404, detail="Accion inexistente")
+    if action == "tratar" and previous not in {"ABIERTO", "ESCALADO", "VENCIDO"}: raise HTTPException(status_code=422, detail="Transicion invalida")
+    if action == "verificar" and previous != "EN_TRATAMIENTO": raise HTTPException(status_code=422, detail="Debe tratarse antes de verificar")
+    if action == "cerrar" and (role not in {"SUPERVISION", "ADMIN"} or previous != "VERIFICADO"): raise HTTPException(status_code=422, detail="El cierre requiere SUPERVISION/ADMIN y verificacion")
+    event.estado = target
+    db.add(DeviationHistory(id_evento=event.id, estado_anterior=previous, estado_nuevo=target, comentario=payload.comentario, id_usuario=actor.id))
+    write_audit(db, user_id=actor.id, table="evento_desvio", record_id=str(event.id), action=action.upper(), after=audit_payload(event), reason=payload.comentario)
+    db.commit(); db.refresh(event); return event
+
+
+@router.post("/desvios/{event_id}/tratar", response_model=DeviationOutput)
+def treat_deviation(event_id: UUID, payload: RecordActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    return transition_deviation(event_id, "tratar", payload, actor, db)
+
+
+@router.post("/desvios/{event_id}/verificar", response_model=DeviationOutput)
+def verify_deviation(event_id: UUID, payload: RecordActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    return transition_deviation(event_id, "verificar", payload, actor, db)
+
+
+@router.post("/desvios/{event_id}/cerrar", response_model=DeviationOutput)
+def close_deviation(event_id: UUID, payload: RecordActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    return transition_deviation(event_id, "cerrar", payload, actor, db)
+
+
+@router.post("/turnos/{fecha_operativa}/{turno_codigo}/{sector}/recibir", status_code=201)
+def receive_shift(fecha_operativa: date, turno_codigo: str, sector: str, payload: ShiftReceiptInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_record_access(db, actor, sector, write=True)
+    receipt = ShiftReceipt(fecha_operativa=fecha_operativa, turno_codigo=turno_codigo, sector=sector, id_usuario=actor.id, observacion=payload.observacion)
+    db.add(receipt); db.flush()
+    write_audit(db, user_id=actor.id, table="recepcion_turno", record_id=str(receipt.id), action="RECEPCION", after=audit_payload(receipt), reason=payload.observacion)
+    db.commit(); return {"id": str(receipt.id)}
 
 
 @router.post("/auth/login", response_model=TokenOutput)

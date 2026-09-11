@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0 y la transicion FT estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT y el nucleo F1 de molienda estan disponibles.
 
 ## Requisitos
 
@@ -32,6 +32,10 @@ El comando crea los roles CARGA, SUPERVISION y ADMIN con permisos base de F0/FT 
 ## Transicion Desde Papel (FT)
 
 Tras iniciar sesion, la web permite imprimir formularios M1, M2, M3, M6 y M10. Cada hoja se completa con fecha operativa, turno, hora y responsable originales. La digitacion se realiza mediante `POST /api/v1/registros/{modulo}` y conserva el momento de medicion, la fecha operativa, el responsable, el usuario digitador y el momento de carga. Para el turno `20-04`, una medicion entre `00:00` y `03:59` pertenece a la fecha operativa anterior.
+
+## Operacion De Molienda (F1)
+
+Los modulos `M1`, `M2`, `M3` y `M6` se registran en `POST /api/v1/registros/{modulo}`. La API valida campos industriales y estructurales, conserva la version de limite aplicada, crea desvíos idempotentes y permite cerrar, validar, anular o corregir mediante comandos explícitos. CARGA solo opera su sector y sus borradores; SUPERVISION/ADMIN corrigen y cierran desvíos verificados.
 
 ## Pruebas
 

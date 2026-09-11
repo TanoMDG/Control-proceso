@@ -26,7 +26,7 @@ def test_paper_entry_preserves_operational_moment_and_is_idempotent(client, admi
         "turno_codigo": "20-04",
         "instante_medicion": datetime(2026, 1, 2, 1, 30, tzinfo=timezone.utc).isoformat(),
         "id_responsable": person["id"],
-        "datos": {"formulario_id": "M1-2026-0101-01", "humedad_verdes": "4.1"},
+        "datos": {"formulario_id": "M1-2026-0101-01", "box_activo": 1, "humedad_verdes": "4.1", "residuo": "1.8", "aeroseparador": "80"},
     }
     first = client.post("/api/v1/registros/m1", headers=auth(token), json=payload)
     second = client.post("/api/v1/registros/m1", headers=auth(token), json=payload)

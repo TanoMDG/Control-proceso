@@ -234,11 +234,27 @@ class DeferredRecordInput(BaseModel):
     instante_medicion: datetime
     id_responsable: UUID
     datos: dict = Field(default_factory=dict)
+    origen_dato: str = Field(default="papel_digitado", pattern="^(digital_directo|papel_digitado)$")
+
+
+class RecordUpdateInput(BaseModel):
+    revision: int = Field(ge=1)
+    datos: dict
+    motivo_correccion: str | None = Field(default=None, max_length=300)
+
+
+class RecordActionInput(BaseModel):
+    comentario: str = Field(min_length=1, max_length=500)
+
+
+class ShiftReceiptInput(BaseModel):
+    observacion: str | None = Field(default=None, max_length=500)
 
 
 class OperationalRecordOutput(ORMModel):
     id: UUID
     modulo: str
+    sector: str
     client_uuid: UUID
     estado: str
     origen_dato: str
@@ -251,3 +267,14 @@ class OperationalRecordOutput(ORMModel):
     creado_por: UUID
     revision: int
     datos: dict
+
+
+class DeviationOutput(ORMModel):
+    id: UUID
+    id_registro: UUID
+    campo: str
+    id_limite: str
+    id_desvio: str
+    estado: str
+    valor_actual: Decimal | None
+    vence_en: datetime | None
