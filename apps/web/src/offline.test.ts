@@ -23,4 +23,10 @@ describe("offline queue contract", () => {
     expect(record).toMatchObject({ module: "m7", route: "/mantenimiento/registros", status: "pendiente" });
     expect(record.payload).toEqual(payload);
   });
+  it("retains an M17 laboratory analysis and its configured result payload for retry", () => {
+    const payload = { client_uuid: "m17-device-uuid", id_punto: "point-id", resultados: [{ id_configuracion: "humidity-config", valor: "2.8" }] };
+    const record = { ...makePending("m17-device-uuid", "m17", payload, false), route: "/laboratorio/analisis", method: "POST" as const };
+    expect(record).toMatchObject({ module: "m17", route: "/laboratorio/analisis", status: "pendiente" });
+    expect(record.payload).toEqual(payload);
+  });
 });

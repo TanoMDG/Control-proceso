@@ -323,6 +323,126 @@ class MaintenanceCorrelation(Base):
     __table_args__ = (CheckConstraint("tipo_referencia IN ('PARADA', 'DESVIO')", name="ck_correlacion_mantenimiento_tipo"), UniqueConstraint("id_registro_mantenimiento", "tipo_referencia", "id_referencia", name="uq_correlacion_mantenimiento"))
 
 
+class LaboratoryUnit(Base, Timestamped):
+    __tablename__ = "laboratorio_unidad"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(120), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class LaboratorySamplePoint(Base, Timestamped):
+    __tablename__ = "laboratorio_punto_muestreo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(160), nullable=False)
+    sector: Mapped[str] = mapped_column(String(40), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class LaboratoryDetermination(Base, Timestamped):
+    __tablename__ = "laboratorio_determinacion"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(160), nullable=False)
+    tipo_resultado: Mapped[str] = mapped_column(String(20), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    __table_args__ = (CheckConstraint("tipo_resultado IN ('NUMERICO', 'GRANULOMETRIA')", name="ck_lab_determinacion_tipo"),)
+
+
+class LaboratoryPointDetermination(Base, Timestamped):
+    __tablename__ = "laboratorio_punto_determinacion"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_punto: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_muestreo.id", ondelete="RESTRICT"), nullable=False)
+    id_determinacion: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_determinacion.id", ondelete="RESTRICT"), nullable=False)
+    id_unidad: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_unidad.id", ondelete="RESTRICT"), nullable=False)
+    id_limite: Mapped[str | None] = mapped_column(String(10), ForeignKey("limite.id", ondelete="RESTRICT"))
+    vigente_desde: Mapped[date] = mapped_column(Date, nullable=False)
+    vigente_hasta_exclusiva: Mapped[date | None] = mapped_column(Date)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    __table_args__ = (CheckConstraint("vigente_hasta_exclusiva IS NULL OR vigente_hasta_exclusiva > vigente_desde", name="ck_lab_punto_determinacion_intervalo"), Index("ix_lab_punto_determinacion_vigencia", "id_punto", "vigente_desde"))
+
+
+class LaboratoryFrequency(Base, Timestamped):
+    __tablename__ = "laboratorio_frecuencia_control"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_configuracion: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_determinacion.id", ondelete="RESTRICT"), nullable=False)
+    vigente_desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    vigente_hasta_exclusiva: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    intervalo_horas: Mapped[Decimal] = mapped_column(Numeric(8, 2), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    __table_args__ = (CheckConstraint("intervalo_horas > 0", name="ck_lab_frecuencia_intervalo"), CheckConstraint("vigente_hasta_exclusiva IS NULL OR vigente_hasta_exclusiva > vigente_desde", name="ck_lab_frecuencia_vigencia"), Index("ix_lab_frecuencia_vigencia", "id_configuracion", "vigente_desde"))
+
+
+class LaboratorySieve(Base, Timestamped):
+    __tablename__ = "laboratorio_tamiz"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    torre: Mapped[str] = mapped_column(String(80), nullable=False)
+    codigo: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(160), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class LaboratoryConfigurationSieve(Base):
+    __tablename__ = "laboratorio_configuracion_tamiz"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_configuracion: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_determinacion.id", ondelete="CASCADE"), nullable=False)
+    id_tamiz: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_tamiz.id", ondelete="RESTRICT"), nullable=False)
+    __table_args__ = (UniqueConstraint("id_configuracion", "id_tamiz", name="uq_lab_configuracion_tamiz"),)
+
+
+class LaboratoryAnalysis(Base, Timestamped):
+    __tablename__ = "analisis_laboratorio"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True, nullable=False)
+    id_punto: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_muestreo.id", ondelete="RESTRICT"), nullable=False)
+    fecha_operativa: Mapped[date] = mapped_column(Date, nullable=False)
+    turno_codigo: Mapped[str] = mapped_column(String(30), nullable=False)
+    instante_muestreo: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    id_mua: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("mua.id", ondelete="RESTRICT"))
+    id_registro_stock: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("registro_operativo.id", ondelete="RESTRICT"))
+    id_registro_proceso: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("registro_operativo.id", ondelete="RESTRICT"))
+    silo: Mapped[int | None] = mapped_column(Integer)
+    id_producto: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("catalogo.id", ondelete="RESTRICT"))
+    estado: Mapped[str] = mapped_column(String(20), default="BORRADOR", nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    creado_por: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    motivo_correccion: Mapped[str | None] = mapped_column(String(300))
+    __table_args__ = (CheckConstraint("silo IS NULL OR silo BETWEEN 1 AND 16", name="ck_analisis_laboratorio_silo"), CheckConstraint("estado IN ('BORRADOR', 'CERRADO', 'VALIDADO', 'ANULADO')", name="ck_analisis_laboratorio_estado"), CheckConstraint("revision > 0", name="ck_analisis_laboratorio_revision"), Index("ix_analisis_laboratorio_consulta", "id_punto", "fecha_operativa"))
+
+
+class LaboratoryAnalysisResult(Base):
+    __tablename__ = "analisis_laboratorio_resultado"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_analisis: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("analisis_laboratorio.id", ondelete="CASCADE"), nullable=False)
+    id_configuracion: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_determinacion.id", ondelete="RESTRICT"), nullable=False)
+    valor: Mapped[Decimal | None] = mapped_column(Numeric(16, 5))
+    unidad: Mapped[str] = mapped_column(String(30), nullable=False)
+    __table_args__ = (UniqueConstraint("id_analisis", "id_configuracion", name="uq_analisis_laboratorio_resultado"),)
+
+
+class LaboratoryGranulometryResult(Base):
+    __tablename__ = "analisis_granulometria"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_analisis: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("analisis_laboratorio.id", ondelete="CASCADE"), nullable=False)
+    id_configuracion: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_punto_determinacion.id", ondelete="RESTRICT"), nullable=False)
+    id_tamiz: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("laboratorio_tamiz.id", ondelete="RESTRICT"), nullable=False)
+    valor: Mapped[Decimal] = mapped_column(Numeric(16, 5), nullable=False)
+    __table_args__ = (UniqueConstraint("id_analisis", "id_configuracion", "id_tamiz", name="uq_analisis_granulometria"),)
+
+
+class LaboratoryDeviationEvent(Base, Timestamped):
+    __tablename__ = "evento_desvio_laboratorio"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_resultado: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("analisis_laboratorio_resultado.id", ondelete="RESTRICT"), nullable=False)
+    id_limite: Mapped[str] = mapped_column(String(10), ForeignKey("limite.id", ondelete="RESTRICT"), nullable=False)
+    id_limite_version: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("limite_version.id", ondelete="RESTRICT"), nullable=False)
+    id_desvio: Mapped[str] = mapped_column(String(10), ForeignKey("plan_reaccion.id_desvio", ondelete="RESTRICT"), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), default="ABIERTO", nullable=False)
+    valor_actual: Mapped[Decimal] = mapped_column(Numeric(16, 5), nullable=False)
+    __table_args__ = (UniqueConstraint("id_resultado", "id_limite_version", name="uq_desvio_laboratorio_resultado_version"), CheckConstraint("estado IN ('ABIERTO', 'EN_TRATAMIENTO', 'VERIFICADO', 'VENCIDO', 'ESCALADO', 'CERRADO', 'INVALIDADO')", name="ck_evento_desvio_laboratorio_estado"))
+
+
 class OperationalRecord(Base, Timestamped):
     __tablename__ = "registro_operativo"
     id: Mapped[uuid.UUID] = uuid_pk()

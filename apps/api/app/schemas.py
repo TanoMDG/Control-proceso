@@ -563,3 +563,127 @@ class PlcAcquisitionStatusOutput(BaseModel):
     ultimo_intento_en: datetime | None
     ultima_muestra_en: datetime | None
     ultimo_error: str | None
+
+
+class LaboratoryMasterInput(BaseModel):
+    codigo: str = Field(min_length=1, max_length=40)
+    descripcion: str = Field(min_length=1, max_length=160)
+
+
+class LaboratoryPointInput(LaboratoryMasterInput):
+    sector: str = Field(min_length=1, max_length=40)
+
+
+class LaboratoryDeterminationInput(LaboratoryMasterInput):
+    tipo_resultado: str = Field(pattern="^(NUMERICO|GRANULOMETRIA)$")
+
+
+class LaboratorySieveInput(LaboratoryMasterInput):
+    torre: str = Field(min_length=1, max_length=80)
+
+
+class LaboratoryMasterOutput(ORMModel):
+    id: UUID
+    codigo: str
+    descripcion: str
+    activo: bool
+
+
+class LaboratoryPointOutput(LaboratoryMasterOutput):
+    sector: str
+
+
+class LaboratoryDeterminationOutput(LaboratoryMasterOutput):
+    tipo_resultado: str
+
+
+class LaboratorySieveOutput(LaboratoryMasterOutput):
+    torre: str
+
+
+class LaboratoryPointDeterminationInput(BaseModel):
+    id_punto: UUID
+    id_determinacion: UUID
+    id_unidad: UUID
+    id_limite: str | None = None
+    vigente_desde: date
+    vigente_hasta_exclusiva: date | None = None
+
+
+class LaboratoryFrequencyInput(BaseModel):
+    id_configuracion: UUID
+    vigente_desde: datetime
+    vigente_hasta_exclusiva: datetime | None = None
+    intervalo_horas: Decimal = Field(gt=0)
+
+
+class LaboratorySieveConfigurationInput(BaseModel):
+    id_tamiz: UUID
+
+
+class LaboratoryResultInput(BaseModel):
+    id_configuracion: UUID
+    valor: Decimal
+
+
+class LaboratoryGranulometryInput(BaseModel):
+    id_configuracion: UUID
+    id_tamiz: UUID
+    valor: Decimal
+
+
+class LaboratoryAnalysisInput(BaseModel):
+    client_uuid: UUID = Field(default_factory=uuid4)
+    id_punto: UUID
+    fecha_operativa: date
+    turno_codigo: str = Field(min_length=1, max_length=30)
+    instante_muestreo: datetime
+    id_mua: UUID | None = None
+    id_registro_stock: UUID | None = None
+    id_registro_proceso: UUID | None = None
+    silo: int | None = Field(default=None, ge=1, le=16)
+    id_producto: UUID | None = None
+    resultados: list[LaboratoryResultInput] = Field(default_factory=list)
+    granulometria: list[LaboratoryGranulometryInput] = Field(default_factory=list)
+
+
+class LaboratoryAnalysisUpdateInput(LaboratoryAnalysisInput):
+    revision: int = Field(ge=1)
+    motivo_correccion: str | None = Field(default=None, max_length=300)
+
+
+class LaboratoryResultOutput(ORMModel):
+    id: UUID
+    id_configuracion: UUID
+    valor: Decimal | None
+    unidad: str
+
+
+class LaboratoryGranulometryOutput(ORMModel):
+    id: UUID
+    id_configuracion: UUID
+    id_tamiz: UUID
+    valor: Decimal
+
+
+class LaboratoryAnalysisOutput(ORMModel):
+    id: UUID
+    client_uuid: UUID
+    id_punto: UUID
+    fecha_operativa: date
+    turno_codigo: str
+    instante_muestreo: datetime
+    id_mua: UUID | None
+    id_registro_stock: UUID | None
+    id_registro_proceso: UUID | None
+    silo: int | None
+    id_producto: UUID | None
+    estado: str
+    revision: int
+    creado_por: UUID
+    resultados: list[LaboratoryResultOutput]
+    granulometria: list[LaboratoryGranulometryOutput]
+
+
+class LaboratoryActionInput(BaseModel):
+    comentario: str = Field(min_length=1, max_length=500)
