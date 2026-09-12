@@ -19,6 +19,10 @@ This audit is deliberately limited to the release risks remediated in `0010_stab
 
 F8 and F9 remain out of scope and unimplemented. Any matrix row marked `PENDING ACCEPTANCE` or `PLANNED` must not be presented as accepted behavior.
 
+## UI Acceptance Gate
+
+Until its corresponding operator, supervision, administration, or remote UI flow is implemented and exercised end-to-end, every CP that requires user interaction is `PENDING ACCEPTANCE` for the v1.0.0 release gate, regardless of the backend implementation label retained below as historical phase evidence. CP50 remains implemented only as its tested negative architectural rule. The current web client exposes M17 only, so this gate currently leaves all other UI-dependent CP pending.
+
 ## CP01-CP35
 
 | ID | Requirement / source | Model | Rule | Screen | Role / scope | Endpoint | Audit / traceability | KPI | Phase | Implementation status |
