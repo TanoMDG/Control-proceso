@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const PASSWORD = "e2e-test-password";
+const API_URL = "http://api_e2e:8000/api/v1";
 
 async function login(page: Page, username: string) {
   await page.goto("/");
@@ -8,6 +9,18 @@ async function login(page: Page, username: string) {
   await page.getByLabel("Contrasena").fill(PASSWORD);
   await page.getByRole("button", { name: "Iniciar sesion" }).click();
   await expect(page.getByText("Sesion iniciada.")).toBeVisible();
+}
+
+async function authenticatedRequest<T>(page: Page, route: string, method = "GET", payload?: unknown): Promise<{ status: number; body: T }> {
+  return page.evaluate(async ({ route, method, payload }) => {
+    const token = sessionStorage.getItem("access_token");
+    const response = await fetch(`http://api_e2e:8000/api/v1${route}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { route, method, payload });
 }
 
 async function operation(page: Page) {
@@ -38,7 +51,7 @@ async function pendingRecord(page: Page) {
 
 test.describe.configure({ mode: "serial" });
 
-test("real credentials expose role and remote navigation boundaries", async ({ page }) => {
+test("real credentials expose role and remote navigation boundaries", async ({ page, browser }) => {
   await login(page, "e2e-laboratorio");
   const nav = page.getByRole("navigation", { name: "Navegacion principal" });
   await expect(nav.getByRole("button", { name: "Laboratorio P21/P22" })).toBeVisible();
@@ -60,6 +73,83 @@ test("real credentials expose role and remote navigation boundaries", async ({ p
   await nav.getByRole("button", { name: "Dashboard KPI" }).click();
   await page.getByRole("button", { name: "Actualizar KPI" }).click();
   await expect(page.getByText("No hay hechos para el alcance seleccionado.")).toBeVisible();
+  const rejected = await authenticatedRequest(page, "/registros/m1", "POST", { origen_dato: "digital_directo" });
+  expect(rejected.status).toBe(403);
+  const token = await page.evaluate(() => sessionStorage.getItem("access_token"));
+  const directContext = await browser.newContext({ extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
+  const directPage = await directContext.newPage();
+  await directPage.goto(`${API_URL}/registros/m1`);
+  await expect(directPage.getByText("Consulta remota solo puede acceder a GET /api/v1/kpi")).toBeVisible();
+  await directContext.close();
+});
+
+test("supervision persists deviation lifecycle, correction audit, conflict, and dashboard data", async ({ page, browser }) => {
+  await login(page, "e2e-molienda");
+  await operation(page);
+  await page.getByLabel("Box activo (1, 2, 3 o 6)").fill("6");
+  await page.getByLabel("Humedad Verdes").fill("4.1");
+  await page.getByLabel("Residuo").fill("1.7");
+  await page.getByLabel("Aeroseparador").fill("3.2");
+  await save(page, "M1");
+  const records = await authenticatedRequest<Array<{ id: string; revision: number; datos: Record<string, unknown> }>>(page, "/registros/m1");
+  expect(records.status).toBe(200);
+  const record = records.body.find((item) => String(item.datos.humedad_verdes) === "4.1");
+  expect(record).toBeTruthy();
+  const deviations = await authenticatedRequest<Array<{ id: string; estado: string }>>(page, "/desvios");
+  const deviation = deviations.body.find((item) => item.estado === "ABIERTO");
+  expect(deviation).toBeTruthy();
+  expect((await authenticatedRequest(page, `/desvios/${deviation!.id}/tratar`, "POST", { comentario: "Ajuste E2E" })).status).toBe(200);
+  expect((await authenticatedRequest(page, `/desvios/${deviation!.id}/verificar`, "POST", { comentario: "Verificacion E2E" })).status).toBe(200);
+  expect((await authenticatedRequest(page, `/registros/m1/${record!.id}/cerrar`, "POST", { comentario: "Cierre E2E" })).status).toBe(200);
+  await page.getByRole("button", { name: "Cerrar sesion" }).click();
+
+  await login(page, "e2e-supervision");
+  expect((await authenticatedRequest(page, `/desvios/${deviation!.id}/cerrar`, "POST", { comentario: "Cierre supervisado E2E" })).status).toBe(200);
+  const corrected = await authenticatedRequest<{ revision: number }>(page, `/registros/m1/${record!.id}`, "PUT", { revision: record!.revision + 1, motivo_correccion: "Lectura verificada E2E", datos: { ...record!.datos, humedad_verdes: 2.9 } });
+  expect(corrected.status).toBe(200);
+  const audit = await authenticatedRequest<Array<{ accion: string; motivo: string | null }>>(page, "/auditoria");
+  expect(audit.body).toEqual(expect.arrayContaining([expect.objectContaining({ accion: "CORRECCION", motivo: "Lectura verificada E2E" })]));
+  await page.getByRole("navigation", { name: "Navegacion principal" }).getByRole("button", { name: "Dashboard KPI" }).click();
+  await page.getByRole("button", { name: "Recalcular" }).click();
+  await expect(page.getByText("Recalculo analitico solicitado.")).toBeVisible();
+  await page.getByRole("button", { name: "Actualizar KPI" }).click();
+  await expect(page.getByText(/humedad_verdes/)).toBeVisible();
+
+  const stale = await browser.newPage();
+  await login(stale, "e2e-molienda");
+  const conflict = await authenticatedRequest(stale, `/registros/m1/${record!.id}`, "PUT", { revision: record!.revision + 1, datos: record!.datos });
+  expect(conflict.status).toBe(409);
+  await stale.close();
+  await page.getByRole("navigation", { name: "Navegacion principal" }).getByRole("button", { name: "Supervision" }).click();
+  await page.getByRole("button", { name: "conflictos" }).click();
+  await page.getByRole("button", { name: "Actualizar conflictos" }).click();
+  await expect(page.getByText("registro_operativo").first()).toBeVisible();
+});
+
+test("administration persists master, limit, calendar, and PLC configuration", async ({ page }) => {
+  await login(page, "e2e-admin");
+  await page.getByRole("navigation", { name: "Navegacion principal" }).getByRole("button", { name: "Administracion" }).click();
+  await page.getByLabel("Tipo").fill("e2e-master");
+  await page.getByLabel("Codigo").fill("E2E-MASTER-ACCEPTANCE");
+  await page.getByLabel("Descripcion").fill("Maestro persistente E2E");
+  await page.getByRole("button", { name: "Crear catalogo" }).click();
+  await expect(page.getByText("Catalogo creado y auditado.")).toBeVisible();
+  const catalog = await authenticatedRequest<Array<{ codigo: string }>>(page, "/catalogos/e2e-master");
+  expect(catalog.body).toEqual(expect.arrayContaining([expect.objectContaining({ codigo: "E2E-MASTER-ACCEPTANCE" })]));
+
+  expect((await authenticatedRequest(page, "/limites", "POST", { id: "E2E-LIM", variable: "Limite E2E", etapa: "E2E", unidad: "%", tipo_dato: "numero" })).status).toBe(201);
+  expect((await authenticatedRequest(page, "/limites/E2E-LIM/versiones", "POST", { vigente_desde: "2020-01-01", valor_min: "1", valor_max: "2", operador_min: ">=", operador_max: "<=", nivel: "ADVERTENCIA", motivo_cambio: "Version E2E" })).status).toBe(201);
+  const limits = await authenticatedRequest<Array<{ id_limite: string }>>(page, "/limites");
+  expect(limits.body).toEqual(expect.arrayContaining([expect.objectContaining({ id_limite: "E2E-LIM" })]));
+  expect((await authenticatedRequest(page, "/calendario", "POST", { fecha_operativa: "2026-09-12", turno_codigo: "08-16", programado: true, horas_programadas: "8", motivo: "Calendario E2E" })).status).toBe(201);
+  const calendar = await authenticatedRequest<Array<{ motivo: string | null }>>(page, "/calendario?desde=2026-09-12&hasta=2026-09-12");
+  expect(calendar.body).toEqual(expect.arrayContaining([expect.objectContaining({ motivo: "Calendario E2E" })]));
+  const source = await authenticatedRequest<{ id: string }>(page, "/plc/configuracion", "POST", { nombre: "Fuente E2E", adaptador: "TEST_SIMULATOR", activo: true });
+  expect(source.status).toBe(201);
+  const tag = await authenticatedRequest<{ referencia_tag: string }>(page, `/plc/configuracion/${source.body.id}/tags`, "POST", { metrica: "medicion_e2e", referencia_tag: "E2E.TAG.01", unidad: "u", escala_factor: "1", escala_offset: "0", muestreo_segundos: 60, agregacion_segundos: 300, retencion_crudo_dias: 1, retencion_agregado_dias: 1, turno_codigo: "08-16", sector: "Molienda", valor_simulado_crudo: "1", calidad_simulada: "GOOD", activo: true });
+  expect(tag.status).toBe(201);
+  const sources = await authenticatedRequest<Array<{ id: string }>>(page, "/plc/configuracion");
+  expect(sources.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: source.body.id })]));
 });
 
 test("M1, M2, M3, and M6 persist through the molienda UI", async ({ page }) => {
@@ -217,7 +307,7 @@ test("two real sessions create a persisted stale-revision conflict", async ({ br
   await supervisor.getByRole("navigation", { name: "Navegacion principal" }).getByRole("button", { name: "Supervision" }).click();
   await supervisor.getByRole("button", { name: "conflictos" }).click();
   await supervisor.getByRole("button", { name: "Actualizar conflictos" }).click();
-  await expect(supervisor.getByText("registro_operativo")).toBeVisible();
+  await expect(supervisor.getByText("registro_operativo").first()).toBeVisible();
 });
 
 test("the production service worker serves the cached shell offline", async ({ page, context }) => {
