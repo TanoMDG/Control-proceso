@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LimitVersion, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
 
-MEASUREMENTS = {"M1": {"humedad_verdes": "%", "residuo": "%", "aeroseparador": "%"}, "M2": {"humedad_salida": "%", "dosificacion_calc": "L/t"}, "M3": {"humedad": "%", "temperatura": "C", "humedad_ksider": "%", "toneladas_calculadas": "t"}}
+MEASUREMENTS = {"M1": {"humedad_verdes": "%", "residuo": "%", "aeroseparador": "%"}, "M2": {"humedad_salida": "%", "dosificacion_calc": "L/t"}, "M3": {"humedad": "%", "temperatura": "C", "humedad_ksider": "%", "toneladas_calculadas": "t"}, "M9": {"humedad_pasta": "%", "presion": "kg/cm2", "humedad_residual": "%"}}
 
 
 def number(value):
@@ -23,14 +23,15 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
     applied = {(row.id_registro, row.campo): row for row in db.scalars(select(AppliedLimit).where(AppliedLimit.tabla_origen == "registro_operativo"))}
     buckets = defaultdict(lambda: {"values": defaultdict(list), "stops": [], "deviations": defaultdict(int)})
     for record in records:
-        key = (record.fecha_operativa, record.turno_codigo, "PLANTA", record.sector)
+        line = record.datos.get("linea") if record.modulo in {"M8", "M9", "M10"} else None
+        key = (record.fecha_operativa, record.turno_codigo, line or "PLANTA", record.sector)
         bucket = buckets[key]
         for metric, unit in MEASUREMENTS.get(record.modulo, {}).items():
             value = number(record.datos.get(metric))
             if value is None: continue
             evaluation = applied.get((record.id, metric))
             version = db.get(LimitVersion, evaluation.id_limite_version) if evaluation else None
-            context = {"modulo": record.modulo, "sector": record.sector}
+            context = {"modulo": record.modulo, "sector": record.sector, "linea": line, "prensa": record.datos.get("prensa"), "formato": record.datos.get("formato")}
             if version: context["banda_limite"] = {"min": float(version.valor_min) if version.valor_min is not None else None, "max": float(version.valor_max) if version.valor_max is not None else None, "resultado": evaluation.resultado}
             db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.instante_medicion, tabla_origen="registro_operativo", id_registro_origen=record.id, metrica=metric, valor=value, unidad=unit, origen_dato=record.origen_dato, contexto=context))
             bucket["values"][metric].append(float(value))
@@ -41,9 +42,33 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
         if record.modulo == "M6" and record.datos.get("fin"):
             duration = number(record.datos.get("duracion_corregida_horas") or record.datos.get("duracion_calculada_horas"))
             if duration is not None: bucket["stops"].append({"causa": record.datos.get("causa", "SIN_CAUSA"), "duracion_horas": float(duration), "inicio": record.datos.get("inicio"), "fin": record.datos.get("fin")})
+        if record.modulo == "M8":
+            duration = number(record.datos.get("duracion_min"))
+            if duration is not None:
+                bucket["values"]["duracion_vaciado_min"].append(float(duration))
+                bucket["values"]["vaciados_tolva"].append(1.0)
+        if record.modulo == "M10":
+            bucket["values"]["controles_espesor"].append(1.0)
+            for detail in record.datos.get("detalles", []):
+                value = number(detail.get("espesor_mm"))
+                if value is None:
+                    continue
+                field = f"espesor_mm:{detail['prensa']}:{detail['cavidad']}:{detail['sector']}"
+                evaluation = applied.get((record.id, field))
+                version = db.get(LimitVersion, evaluation.id_limite_version) if evaluation else None
+                context = {"modulo": "M10", "sector": record.sector, "linea": line, "prensa": detail["prensa"], "cavidad": detail["cavidad"], "sector_grilla": detail["sector"], "formato": record.datos.get("formato")}
+                if version:
+                    context["banda_limite"] = {"min": float(version.valor_min) if version.valor_min is not None else None, "max": float(version.valor_max) if version.valor_max is not None else None, "resultado": evaluation.resultado}
+                db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.instante_medicion, tabla_origen="registro_operativo", id_registro_origen=record.id, metrica="espesor_mm", valor=value, unidad="mm", origen_dato=record.origen_dato, contexto=context))
+                bucket["values"]["espesor_mm"].append(float(value))
+            dispersion = number(record.datos.get("dispersion_mm"))
+            if dispersion is not None:
+                bucket["values"]["dispersion_mm"].append(float(dispersion))
     for event in db.scalars(select(DeviationEvent)):
         record = db.get(OperationalRecord, event.id_registro)
-        if record and record.estado != "ANULADO": buckets[(record.fecha_operativa, record.turno_codigo, "PLANTA", record.sector)]["deviations"][event.estado] += 1
+        if record and record.estado != "ANULADO":
+            line = record.datos.get("linea") if record.modulo in {"M8", "M9", "M10"} else None
+            buckets[(record.fecha_operativa, record.turno_codigo, line or "PLANTA", record.sector)]["deviations"][event.estado] += 1
     calendar = {(row.fecha_operativa, row.turno_codigo): float(row.horas_programadas or 0) for row in db.scalars(select(ProductionCalendar).where(ProductionCalendar.programado.is_(True)))}
     for key, bucket in buckets.items():
         scheduled = calendar.get(key[:2], 0)
@@ -54,7 +79,7 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
                 union += (end - start).total_seconds() / 3600; last = [start, end]
             elif end > last[1]:
                 union += (end - last[1]).total_seconds() / 3600; last[1] = end
-        metrics = {metric: sum(values) / len(values) for metric, values in bucket["values"].items()}
+        metrics = {metric: (sum(values) if metric in {"vaciados_tolva", "controles_espesor"} else sum(values) / len(values)) for metric, values in bucket["values"].items()}
         metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"])})
         db.add(ShiftFact(fecha_operativa=key[0], turno_codigo=key[1], linea_clave=key[2], contexto_clave=key[3], metricas=metrics))
     run.estado, run.completado_en = "COMPLETADO", datetime.now(timezone.utc)

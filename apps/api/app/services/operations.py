@@ -5,11 +5,14 @@ from fastapi import HTTPException
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from app.models.core import AppliedLimit, DeviationEvent, DeviationHistory, LimitVersion, OperationalRecord, ReactionPlan, SiloScale, SiloScalePoint
+from app.models.core import AppliedLimit, Catalog, DeviationEvent, DeviationHistory, LimitVersion, OperationalRecord, ReactionPlan, SiloScale, SiloScalePoint
 from app.services.limits import evaluate_limit
 
-MODULE_SECTOR = {"M1": "Molienda", "M2": "Molienda", "M3": "Molienda", "M6": "Molienda"}
-LIMIT_FIELDS = {"M1": {"humedad_verdes": "L02", "residuo": "L03", "aeroseparador": "L04"}, "M2": {"humedad_salida": "L10"}, "M3": {"humedad": "L12", "temperatura": "L13", "humedad_ksider": "L24", "toneladas_calculadas": "L26"}}
+MODULE_SECTOR = {"M1": "Molienda", "M2": "Molienda", "M3": "Molienda", "M6": "Molienda", "M8": "Prensas", "M9": "Prensas", "M10": "Prensas"}
+LIMIT_FIELDS = {"M1": {"humedad_verdes": "L02", "residuo": "L03", "aeroseparador": "L04"}, "M2": {"humedad_salida": "L10"}, "M3": {"humedad": "L12", "temperatura": "L13", "humedad_ksider": "L24", "toneladas_calculadas": "L26"}, "M9": {"humedad_pasta": "L31", "presion": "L32", "humedad_residual": "L37"}}
+THICKNESS_LIMITS_BY_FORMAT = {"64X64": "L33", "64X122": "L34"}
+DISPERSION_LIMITS = ("L42", "L43", "L44")
+FALLBACK_PRESSES = {"L6": ("PH Siti",), "L7": ("PH5000-1", "PH5000-2")}
 
 
 def decimal_value(data: dict, field: str, required: bool = True) -> Decimal | None:
@@ -19,9 +22,57 @@ def decimal_value(data: dict, field: str, required: bool = True) -> Decimal | No
             raise HTTPException(status_code=422, detail=f"{field} es obligatorio")
         return None
     try:
-        return Decimal(str(value))
+        decimal = Decimal(str(value))
     except InvalidOperation as exc:
         raise HTTPException(status_code=422, detail=f"{field} debe ser numerico") from exc
+    if not decimal.is_finite():
+        raise HTTPException(status_code=422, detail=f"{field} debe ser un numero finito")
+    return decimal
+
+
+def active_catalog(db: Session, kind: str, code: str) -> Catalog:
+    item = db.scalar(select(Catalog).where(Catalog.tipo == kind, Catalog.codigo == code, Catalog.activo.is_(True)))
+    if item is None:
+        raise HTTPException(status_code=422, detail=f"{kind} inexistente o inactivo: {code}")
+    return item
+
+
+def normalized_line(value) -> str:
+    line = str(value or "").upper()
+    if line not in FALLBACK_PRESSES:
+        raise HTTPException(status_code=422, detail="linea debe ser L6 o L7")
+    return line
+
+
+def presses_for_line(db: Session, line: str) -> tuple[str, ...]:
+    configured = list(db.scalars(select(Catalog).where(Catalog.tipo == "prensa", Catalog.activo.is_(True))))
+    matching = tuple(item.codigo for item in configured if (item.atributos or {}).get("linea") == line)
+    return matching or FALLBACK_PRESSES[line]
+
+
+def validate_press_line(db: Session, line: str, press: str) -> str:
+    press = str(press or "").strip()
+    if not press:
+        raise HTTPException(status_code=422, detail="prensa es obligatorio")
+    configured = db.scalar(select(Catalog).where(Catalog.tipo == "prensa", Catalog.codigo == press, Catalog.activo.is_(True)))
+    if configured is not None:
+        if (configured.atributos or {}).get("linea") != line:
+            raise HTTPException(status_code=422, detail="La prensa no pertenece fisicamente a la linea seleccionada")
+        return configured.codigo
+    upper = press.upper()
+    if (line == "L6" and "PH SITI" in upper) or (line == "L7" and upper.startswith("PH5000")):
+        return press
+    raise HTTPException(status_code=422, detail="La prensa no pertenece fisicamente a la linea seleccionada")
+
+
+def selected_format(db: Session, code: str) -> tuple[Catalog, Decimal, Decimal]:
+    item = active_catalog(db, "formato", str(code or ""))
+    attributes = item.atributos or {}
+    nominal = decimal_value(attributes, "espesor_nominal_mm")
+    tolerance = decimal_value(attributes, "tolerancia_mm")
+    if tolerance < 0:
+        raise HTTPException(status_code=422, detail="La tolerancia del formato no puede ser negativa")
+    return item, nominal, tolerance
 
 
 def normalized_data(db: Session, module: str, source: dict, operational_date) -> dict:
@@ -80,6 +131,70 @@ def normalized_data(db: Session, module: str, source: dict, operational_date) ->
             raise HTTPException(status_code=422, detail="Intervalo de parada invalido")
         if end:
             data["duracion_calculada_horas"] = str((end - start).total_seconds() / 3600)
+    elif module == "M8":
+        line = normalized_line(data.get("linea"))
+        if not data.get("causa_vaciado"):
+            raise HTTPException(status_code=422, detail="causa_vaciado es obligatorio")
+        duration = decimal_value(data, "duracion_min")
+        if duration < 0:
+            raise HTTPException(status_code=422, detail="duracion_min no puede ser negativo")
+        data.update({"linea": line, "prensa": validate_press_line(db, line, data.get("prensa")), "duracion_min": str(duration), "recordatorio_descarte_min": "10"})
+    elif module == "M9":
+        line = normalized_line(data.get("linea"))
+        format_item, nominal, tolerance = selected_format(db, data.get("formato"))
+        data.update({"linea": line, "prensa": validate_press_line(db, line, data.get("prensa")), "formato": format_item.codigo, "formato_aplicado": {"codigo": format_item.codigo, "espesor_nominal_mm": str(nominal), "tolerancia_mm": str(tolerance)}})
+        for field in ("humedad_pasta", "presion", "humedad_residual"):
+            data[field] = str(decimal_value(data, field))
+    elif module == "M10":
+        line = normalized_line(data.get("linea"))
+        format_item, nominal, tolerance = selected_format(db, data.get("formato"))
+        details = data.get("detalles")
+        if not isinstance(details, list):
+            raise HTTPException(status_code=422, detail="detalles de espesor obligatorios")
+        presses = presses_for_line(db, line)
+        expected = {(press, cavity, sector) for press in presses for cavity in (1, 2) for sector in range(1, 10)}
+        seen, values, normalized_details, thickness_warnings = set(), [], [], []
+        for detail in details:
+            if not isinstance(detail, dict):
+                raise HTTPException(status_code=422, detail="detalle de espesor invalido")
+            try:
+                cavity, sector = int(detail.get("cavidad")), int(detail.get("sector"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail="cavidad y sector de espesor deben ser enteros") from exc
+            press = validate_press_line(db, line, detail.get("prensa"))
+            key = (press, cavity, sector)
+            if key not in expected or key in seen:
+                raise HTTPException(status_code=422, detail="detalle de espesor invalido")
+            value = decimal_value(detail, "espesor_mm")
+            seen.add(key)
+            values.append(value)
+            normalized_details.append({"prensa": press, "cavidad": cavity, "sector": sector, "espesor_mm": str(value)})
+            if value < nominal - tolerance or value > nominal + tolerance:
+                thickness_warnings.append({"prensa": press, "cavidad": cavity, "sector": sector, "espesor_mm": str(value)})
+        if seen != expected:
+            raise HTTPException(status_code=422, detail="Cada prensa y cavidad requiere su grilla completa de 3x3 sectores")
+        minimum, maximum = min(values), max(values)
+        dispersion_warnings = []
+        for limit_id in DISPERSION_LIMITS:
+            version = db.scalar(select(LimitVersion).where(LimitVersion.id_limite == limit_id, LimitVersion.vigente_desde <= operational_date, LimitVersion.estado != "CANCELADA").order_by(LimitVersion.vigente_desde.desc()))
+            if version is not None and evaluate_limit(version, maximum - minimum) == "FUERA_DE_RANGO":
+                dispersion_warnings.append(limit_id)
+        format_snapshot = {"codigo": format_item.codigo, "espesor_nominal_mm": str(nominal), "tolerancia_mm": str(tolerance)}
+        if (format_item.atributos or {}).get("id_limite_espesor"):
+            format_snapshot["id_limite_espesor"] = str(format_item.atributos["id_limite_espesor"])
+        data.update({
+            "linea": line,
+            "formato": format_item.codigo,
+            "formato_aplicado": format_snapshot,
+            "detalles": normalized_details,
+            "espesor_min": str(minimum),
+            "espesor_max": str(maximum),
+            "dispersion_mm": str(maximum - minimum),
+            "advertencia_espesor": bool(thickness_warnings),
+            "detalles_fuera_tolerancia": thickness_warnings,
+            "advertencia_dispersion": bool(dispersion_warnings),
+            "limites_dispersion_advertidos": dispersion_warnings,
+        })
     return data
 
 
@@ -88,8 +203,13 @@ def evaluate_record(db: Session, record: OperationalRecord, actor_id) -> None:
     if record.modulo == "M3":
         kind = record.datos.get("tipo_registro")
         fields = {key: value for key, value in fields.items() if (kind == "lecho" and key in {"humedad", "temperatura"}) or (kind == "ksider_rechazo" and key == "humedad_ksider") or (kind == "stock_silo" and key == "toneladas_calculadas")}
-    for field, limit_id in fields.items():
-        value = decimal_value(record.datos, field)
+    evaluations = [(field, limit_id, decimal_value(record.datos, field)) for field, limit_id in fields.items()]
+    if record.modulo == "M10":
+        format_limit = (record.datos.get("formato_aplicado") or {}).get("id_limite_espesor") or THICKNESS_LIMITS_BY_FORMAT.get(str(record.datos.get("formato", "")).upper())
+        if format_limit:
+            evaluations.extend((f"espesor_mm:{detail['prensa']}:{detail['cavidad']}:{detail['sector']}", format_limit, decimal_value(detail, "espesor_mm")) for detail in record.datos["detalles"])
+        evaluations.extend((f"dispersion_mm:{limit_id}", limit_id, decimal_value(record.datos, "dispersion_mm")) for limit_id in DISPERSION_LIMITS)
+    for field, limit_id, value in evaluations:
         version = db.scalar(select(LimitVersion).where(LimitVersion.id_limite == limit_id, LimitVersion.vigente_desde <= record.fecha_operativa, LimitVersion.estado != "CANCELADA").order_by(LimitVersion.vigente_desde.desc()))
         if version is None:
             continue

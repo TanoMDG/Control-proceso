@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1 y el dashboard F2 estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2 y F3 estan disponibles.
 
 ## Requisitos
 
@@ -41,9 +41,15 @@ Los modulos `M1`, `M2`, `M3` y `M6` se registran en `POST /api/v1/registros/{mod
 
 Ejecute `docker compose exec api python -m app.cli recalculate-analytics` de forma programada, o `POST /api/v1/analitica/recalcular` como SUPERVISION/ADMIN. `GET /api/v1/kpi` y `GET /api/v1/kpi/pareto-paradas` leen exclusivamente los hechos analíticos reconstruidos y devuelven la hora del último recálculo.
 
+## Operacion De Prensas (F3)
+
+Los modulos `M8`, `M9` y `M10` se cargan en `POST /api/v1/registros/{modulo}` para el sector Prensas. M8 valida la relacion fisica linea-prensa y conserva el recordatorio operativo de descarte de 10 minutos. M9 aplica los limites configurados, incluida la presion L32/D19. M10 exige la grilla completa de 3x3 sectores para cada una de las dos cavidades y todas las prensas de la linea, toma nominal y tolerancia del catalogo de formato activo, y conserva min/max/dispersion.
+
+Las advertencias de dispersion usan exclusivamente las versiones configuradas de L42-L44. Una regla sin `id_desvio` deja una advertencia visible y un limite aplicado, pero no crea un Dxx ni un evento ficticio. El recalculo analitico incorpora vaciados, presion y controles/espesores por linea.
+
 ## Operacion Offline
 
-Los formularios F1 guardan cargas sin conexión en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicación reintenta la sincronización sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Las validaciones industriales y los conflictos de revisión siguen resolviéndose exclusivamente en backend.
+Los formularios F1 y F3 guardan cargas sin conexion en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicacion reintenta la sincronizacion sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Los rechazos 4xx se muestran al operador y no se encolan como si fueran recuperables. Las validaciones industriales y los conflictos de revision siguen resolviendose exclusivamente en backend.
 
 ## Pruebas
 

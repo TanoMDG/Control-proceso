@@ -5,11 +5,11 @@ from app.models.core import DeviationEvent, Limit, LimitVersion, ReactionPlan, S
 from tests.conftest import auth
 
 
-def carga_token(client, admin_token):
+def carga_token(client, admin_token, sector="Molienda"):
     headers = auth(admin_token)
     person = client.post("/api/v1/personas", headers=headers, json={"legajo": "TEST-F1-01", "apellido_nombre": "Operador Molienda"}).json()
     role = next(item for item in client.get("/api/v1/roles", headers=headers).json() if item["nombre"] == "CARGA")
-    client.post("/api/v1/usuarios", headers=headers, json={"id_persona": person["id"], "nombre_usuario": "carga.f1", "password": "Clave-de-prueba-F1-123", "id_rol": role["id"], "sector": "Molienda"})
+    client.post("/api/v1/usuarios", headers=headers, json={"id_persona": person["id"], "nombre_usuario": "carga.f1", "password": "Clave-de-prueba-F1-123", "id_rol": role["id"], "sector": sector})
     token = client.post("/api/v1/auth/login", json={"username": "carga.f1", "password": "Clave-de-prueba-F1-123"}).json()["access_token"]
     return person, token
 

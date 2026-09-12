@@ -8,8 +8,8 @@ h1 { margin: 12px 0 0; font-size: 2rem; }
 .subtitle { margin: 4px 0 28px; color: #bdd1d6; }
 form { display: grid; gap: 18px; }
 label { display: grid; gap: 7px; font-weight: bold; }
-input, select, button { min-height: 48px; border-radius: 6px; font-size: 1rem; }
-input, select { border: 1px solid #8caab0; padding: 10px; }
+input, select, textarea, button { min-height: 48px; border-radius: 6px; font-size: 1rem; }
+input, select, textarea { border: 1px solid #8caab0; padding: 10px; }
 button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-weight: bold; }
 .message { min-height: 42px; color: #c7dce0; line-height: 1.4; }
 .forms { display: grid; gap: 12px; }
@@ -20,3 +20,14 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .dashboard pre { overflow: auto; white-space: pre-wrap; color: #c7dce0; }
 .operational { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-top: 18px; border-top: 1px solid #4f7780; padding-top: 18px; }
 .operational h2, .operational button { grid-column: 1 / -1; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.form-actions button { padding: 0 14px; }
+.inline-note, .thickness, .offline { grid-column: 1 / -1; }
+.inline-note { margin: 0; color: #bdd1d6; }
+.thickness { border: 1px solid #4f7780; border-radius: 8px; padding: 14px; }
+.thickness h3, .press-grid h4 { margin: 0 0 10px; }
+.press-grid { margin-top: 16px; }
+.press-grid fieldset { border: 0; margin: 0 0 12px; padding: 0; }
+.press-grid fieldset > div { display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr)); gap: 8px; }
+.press-grid input { min-height: 40px; width: 100%; }
+.offline { border-top: 1px solid #4f7780; padding-top: 16px; }
