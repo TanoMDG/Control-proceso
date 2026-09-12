@@ -56,6 +56,9 @@ def normalized_data(db: Session, module: str, source: dict, operational_date) ->
             silo = int(data.get("silo", 0))
             if silo not in range(1, 17):
                 raise HTTPException(status_code=422, detail="silo debe estar entre 1 y 16")
+            line = str(data.get("linea", ""))
+            if line and ((line == "L6" and silo <= 8) or (line == "L7" and silo >= 9)):
+                raise HTTPException(status_code=422, detail="El silo no pertenece fisicamente a la linea seleccionada")
             group = "1-8" if silo <= 8 else "9-16"
             scale = db.scalar(select(SiloScale).where(SiloScale.grupo_silos == group, SiloScale.vigente_desde <= operational_date).order_by(SiloScale.vigente_desde.desc()))
             if scale is None:

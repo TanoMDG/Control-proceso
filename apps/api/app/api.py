@@ -11,7 +11,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SyncConflict, SystemParameterVersion, User
+from app.models.core import AnalyticsRun, AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
 from app.schemas import (AnalyticsRebuildOutput, AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
@@ -97,7 +97,10 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
         raise HTTPException(status_code=404, detail="Modulo operativo inexistente")
     sector = MODULE_SECTOR[module]
     assert_record_access(db, actor, sector, write=True)
-    if db.get(Person, payload.id_responsable) is None:
+    responsible_id = payload.id_responsable or actor.id_persona
+    if payload.origen_dato == "papel_digitado" and payload.id_responsable is None:
+        raise HTTPException(status_code=422, detail="Responsable original obligatorio para formulario en papel")
+    if db.get(Person, responsible_id) is None:
         raise HTTPException(status_code=422, detail="Responsable inexistente")
     if payload.fecha_operativa != expected_operational_date(payload.turno_codigo, payload.instante_medicion):
         raise HTTPException(status_code=422, detail="La fecha operativa no corresponde al turno y momento de medicion originales")
@@ -105,6 +108,10 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     if existing is not None:
         return existing
     data = normalized_data(db, module, payload.datos, payload.fecha_operativa)
+    if module == "M1" and data.get("tipo_registro") == "resumen_turno":
+        summaries = db.scalars(select(OperationalRecord).where(OperationalRecord.modulo == "M1", OperationalRecord.fecha_operativa == payload.fecha_operativa, OperationalRecord.turno_codigo == payload.turno_codigo, OperationalRecord.sector == sector))
+        if any(row.datos.get("tipo_registro") == "resumen_turno" for row in summaries):
+            raise HTTPException(status_code=422, detail="Solo se admite un resumen de produccion por turno")
     record = OperationalRecord(
         modulo=module,
         sector=sector,
@@ -113,7 +120,7 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
         fecha_operativa=payload.fecha_operativa,
         turno_codigo=payload.turno_codigo,
         instante_medicion=payload.instante_medicion,
-        id_responsable=payload.id_responsable,
+        id_responsable=responsible_id,
         id_usuario_digitador=actor.id if payload.origen_dato == "papel_digitado" else None,
         creado_por=actor.id,
         datos=data,
@@ -158,6 +165,11 @@ def correct_record(modulo: str, record_id: UUID, payload: RecordUpdateInput, act
     if role == "CARGA" and (record.estado != "BORRADOR" or record.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores")
     if record.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
     before = audit_payload(record)
+    previous_burner = record.datos.get("temperatura_quemador")
+    requested_burner = payload.datos.get("temperatura_quemador")
+    if previous_burner is not None and requested_burner is not None and str(previous_burner) != str(requested_burner):
+        if payload.datos.get("temperatura_quemador_previa") != previous_burner or not payload.datos.get("motivo_cambio_quemador"):
+            raise HTTPException(status_code=422, detail="El cambio de quemador requiere valor previo y motivo")
     record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa), payload.motivo_correccion, record.revision + 1
     evaluate_record(db, record, actor.id)
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion)
@@ -261,7 +273,7 @@ def recalculate_analytics(actor: User = Depends(require_supervision), db: Sessio
 
 
 @router.get("/kpi")
-def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | None = None, linea: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     role = get_role(db, actor).nombre
     if role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
     statement = select(ShiftFact)
@@ -269,10 +281,25 @@ def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | N
     if desde: statement = statement.where(ShiftFact.fecha_operativa >= desde)
     if hasta: statement = statement.where(ShiftFact.fecha_operativa <= hasta)
     if turno: statement = statement.where(ShiftFact.turno_codigo == turno)
+    if linea: statement = statement.where(ShiftFact.linea_clave == linea)
     if contexto: statement = statement.where(ShiftFact.contexto_clave == contexto)
     facts = list(db.scalars(statement.order_by(ShiftFact.fecha_operativa, ShiftFact.turno_codigo)))
     last = db.scalar(select(AnalyticsRun).where(AnalyticsRun.estado == "COMPLETADO").order_by(AnalyticsRun.completado_en.desc()))
     return {"ultimo_recalculo": last.completado_en if last else None, "hechos": [{"fecha_operativa": row.fecha_operativa, "turno": row.turno_codigo, "contexto": row.contexto_clave, "metricas": row.metricas} for row in facts]}
+
+
+@router.get("/kpi/tendencias")
+def kpi_trends(metrica: str, desde: date | None = None, hasta: date | None = None, turno: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    role = get_role(db, actor).nombre
+    if role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
+    statement = select(TemporalMeasurementFact).where(TemporalMeasurementFact.metrica == metrica)
+    if role == "CARGA": statement = statement.where(TemporalMeasurementFact.contexto["sector"].astext == actor.sector, TemporalMeasurementFact.fecha_operativa >= date.today() - timedelta(days=6))
+    if desde: statement = statement.where(TemporalMeasurementFact.fecha_operativa >= desde)
+    if hasta: statement = statement.where(TemporalMeasurementFact.fecha_operativa <= hasta)
+    if turno: statement = statement.where(TemporalMeasurementFact.turno_codigo == turno)
+    if contexto: statement = statement.where(TemporalMeasurementFact.contexto["sector"].astext == contexto)
+    rows = list(db.scalars(statement.order_by(TemporalMeasurementFact.instante_operativo)))
+    return {"metrica": metrica, "puntos": [{"instante": row.instante_operativo, "valor": row.valor, "unidad": row.unidad, "banda_limite": row.contexto.get("banda_limite")} for row in rows]}
 
 
 @router.get("/kpi/pareto-paradas")

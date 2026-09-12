@@ -54,6 +54,14 @@ services:
     ports:
       - "5173:80"
 
+  web_tests:
+    image: node:24-alpine
+    profiles: ["test"]
+    working_dir: /app
+    volumes:
+      - ./apps/web:/app
+    entrypoint: ["/bin/sh", "-c", "npm install && npm test"]
+
   tests:
     build:
       context: ./apps/api

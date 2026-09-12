@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models.core import AnalyticsRun, DeviationEvent, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
+from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LimitVersion, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
 
 MEASUREMENTS = {"M1": {"humedad_verdes": "%", "residuo": "%", "aeroseparador": "%"}, "M2": {"humedad_salida": "%", "dosificacion_calc": "L/t"}, "M3": {"humedad": "%", "temperatura": "C", "humedad_ksider": "%", "toneladas_calculadas": "t"}}
 
@@ -20,6 +20,7 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
     db.add(run); db.flush()
     db.execute(delete(TemporalMeasurementFact)); db.execute(delete(ShiftFact))
     records = list(db.scalars(select(OperationalRecord).where(OperationalRecord.estado != "ANULADO").order_by(OperationalRecord.instante_medicion)))
+    applied = {(row.id_registro, row.campo): row for row in db.scalars(select(AppliedLimit).where(AppliedLimit.tabla_origen == "registro_operativo"))}
     buckets = defaultdict(lambda: {"values": defaultdict(list), "stops": [], "deviations": defaultdict(int)})
     for record in records:
         key = (record.fecha_operativa, record.turno_codigo, "PLANTA", record.sector)
@@ -27,7 +28,11 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
         for metric, unit in MEASUREMENTS.get(record.modulo, {}).items():
             value = number(record.datos.get(metric))
             if value is None: continue
-            db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.instante_medicion, tabla_origen="registro_operativo", id_registro_origen=record.id, metrica=metric, valor=value, unidad=unit, origen_dato=record.origen_dato, contexto={"modulo": record.modulo, "sector": record.sector}))
+            evaluation = applied.get((record.id, metric))
+            version = db.get(LimitVersion, evaluation.id_limite_version) if evaluation else None
+            context = {"modulo": record.modulo, "sector": record.sector}
+            if version: context["banda_limite"] = {"min": float(version.valor_min) if version.valor_min is not None else None, "max": float(version.valor_max) if version.valor_max is not None else None, "resultado": evaluation.resultado}
+            db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.instante_medicion, tabla_origen="registro_operativo", id_registro_origen=record.id, metrica=metric, valor=value, unidad=unit, origen_dato=record.origen_dato, contexto=context))
             bucket["values"][metric].append(float(value))
         if record.modulo == "M1" and record.datos.get("tipo_registro") == "resumen_turno":
             for metric in ("toneladas_procesadas", "horas_marcha"):

@@ -41,6 +41,10 @@ Los modulos `M1`, `M2`, `M3` y `M6` se registran en `POST /api/v1/registros/{mod
 
 Ejecute `docker compose exec api python -m app.cli recalculate-analytics` de forma programada, o `POST /api/v1/analitica/recalcular` como SUPERVISION/ADMIN. `GET /api/v1/kpi` y `GET /api/v1/kpi/pareto-paradas` leen exclusivamente los hechos analíticos reconstruidos y devuelven la hora del último recálculo.
 
+## Operacion Offline
+
+Los formularios F1 guardan cargas sin conexión en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicación reintenta la sincronización sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Las validaciones industriales y los conflictos de revisión siguen resolviéndose exclusivamente en backend.
+
 ## Pruebas
 
 ```sh
