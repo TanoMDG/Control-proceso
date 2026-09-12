@@ -13,4 +13,8 @@ describe("offline queue contract", () => {
     const payload = { client_uuid: "m10-device-uuid", datos: { linea: "L7", detalles: [{ prensa: "PH5000-1", cavidad: 1, sector: 1, espesor_mm: "7.10" }] } };
     expect(makePending("m10-device-uuid", "m10", payload, false).payload).toEqual(payload);
   });
+  it("retains an F4 temporal endpoint for offline retry", () => {
+    const record = { ...makePending("m5-device-uuid", "m5", { id_mua: "mua-id", box: "1" }, false), route: "/trazabilidad/mua-box", method: "POST" as const };
+    expect(record).toMatchObject({ module: "m5", route: "/trazabilidad/mua-box", method: "POST", status: "pendiente" });
+  });
 });

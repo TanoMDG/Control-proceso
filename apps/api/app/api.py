@@ -11,8 +11,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
-from app.schemas import (AnalyticsRebuildOutput, AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
+from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
@@ -80,9 +80,38 @@ def assert_record_access(db: Session, actor: User, sector: str, *, write: bool =
         raise HTTPException(status_code=403, detail="CARGA solo escribe su sector")
 
 
+def assert_traceability_access(db: Session, actor: User, *, create_mua: bool = False, read: bool = False) -> None:
+    role = get_role(db, actor).nombre
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="Permiso de trazabilidad insuficiente")
+    if create_mua and role not in {"SUPERVISION", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="La creacion de MUA requiere SUPERVISION o ADMIN")
+    if read and role == "CARGA":
+        raise HTTPException(status_code=403, detail="La consulta de trazabilidad requiere SUPERVISION o ADMIN")
+
+
+def trace_time(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Los periodos deben incluir zona horaria")
+    return value
+
+
+def close_period(period, until: datetime, actor: User) -> None:
+    until = trace_time(until)
+    if period.hasta is not None:
+        raise HTTPException(status_code=422, detail="El periodo ya esta cerrado")
+    if until <= period.desde:
+        raise HTTPException(status_code=422, detail="El fin debe ser posterior al inicio del periodo")
+    period.hasta, period.id_usuario_fin = until, actor.id
+
+
+def overlaps(start: datetime, end: datetime | None, other_start: datetime, other_end: datetime | None) -> bool:
+    return (end is None or other_start < end) and (other_end is None or start < other_end)
+
+
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F3"}
+    return {"status": "ok", "phase": "F4"}
 
 
 @router.get("/exportar", response_class=HTMLResponse)
@@ -263,6 +292,181 @@ def receive_shift(fecha_operativa: date, turno_codigo: str, sector: str, payload
     db.add(receipt); db.flush()
     write_audit(db, user_id=actor.id, table="recepcion_turno", record_id=str(receipt.id), action="RECEPCION", after=audit_payload(receipt), reason=payload.observacion)
     db.commit(); return {"id": str(receipt.id)}
+
+
+@router.post("/mua", response_model=MuaOutput, status_code=201)
+def create_mua(payload: MuaCreateInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor, create_mua=True)
+    preparer = db.get(Person, payload.id_preparador)
+    if preparer is None:
+        raise HTTPException(status_code=422, detail="Preparador inexistente")
+    prefix = f"MUA-{payload.fecha_generacion:%Y-%m%d}-"
+    sequence = sum(1 for code in db.scalars(select(MUA.codigo).where(MUA.codigo.like(f"{prefix}%")))) + 1
+    mua = MUA(codigo=f"{prefix}{sequence:02d}", fecha_generacion=payload.fecha_generacion, id_preparador=payload.id_preparador, composicion=[component.model_dump(exclude_none=True) for component in payload.composicion], creado_por=actor.id)
+    db.add(mua)
+    db.flush()
+    write_audit(db, user_id=actor.id, table="mua", record_id=str(mua.id), action="ALTA", after=audit_payload(mua), reason="Registro M4 de identidad y composicion")
+    db.commit()
+    db.refresh(mua)
+    return mua
+
+
+@router.get("/mua", response_model=list[MuaListOutput])
+def list_mua(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    rows = list(db.scalars(select(MUA).order_by(MUA.fecha_generacion, MUA.codigo)))
+    active = list(db.scalars(select(MuaBoxPresence).where(MuaBoxPresence.hasta.is_(None))))
+    fifo_by_box: dict[str, list[MuaBoxPresence]] = {}
+    for presence in active:
+        fifo_by_box.setdefault(presence.box, []).append(presence)
+    for presences in fifo_by_box.values():
+        presences.sort(key=lambda row: db.get(MUA, row.id_mua).fecha_generacion)
+    return [{"id": mua.id, "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": mua.id_preparador, "composicion": mua.composicion, "creado_por": mua.creado_por, "presencias_activas": [{"id": presence.id, "id_mua": presence.id_mua, "box": presence.box, "desde": presence.desde, "hasta": presence.hasta, "certeza": presence.certeza, "id_usuario_inicio": presence.id_usuario_inicio, "id_usuario_fin": presence.id_usuario_fin} for presence in active if presence.id_mua == mua.id], "orden_fifo": min((box_rows.index(presence) + 1 for box_rows in fifo_by_box.values() for presence in box_rows if presence.id_mua == mua.id), default=None)} for mua in rows]
+
+
+@router.post("/trazabilidad/mua-box", response_model=MuaBoxPeriodOutput, status_code=201)
+def start_mua_box(payload: MuaBoxStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    if db.get(MUA, payload.id_mua) is None:
+        raise HTTPException(status_code=422, detail="La MUA debe existir antes de cargarla en un box")
+    row = MuaBoxPresence(id_mua=payload.id_mua, box=payload.box.strip(), desde=trace_time(payload.desde), certeza=payload.certeza, id_usuario_inicio=actor.id)
+    db.add(row)
+    db.flush()
+    write_audit(db, user_id=actor.id, table="mua_box_presencia", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Carga M5 de MUA en box")
+    db.commit(); db.refresh(row)
+    return row
+
+
+@router.patch("/trazabilidad/mua-box/{period_id}", response_model=MuaBoxPeriodOutput)
+def finish_mua_box(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    row = db.get(MuaBoxPresence, period_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Periodo MUA-box inexistente")
+    before = audit_payload(row); close_period(row, payload.hasta, actor)
+    write_audit(db, user_id=actor.id, table="mua_box_presencia", record_id=str(row.id), action="CIERRE", before=before, after=audit_payload(row), reason="Fin de presencia MUA en box")
+    db.commit(); db.refresh(row)
+    return row
+
+
+@router.post("/trazabilidad/box-verdes", response_model=BoxVerdesPeriodOutput, status_code=201)
+def start_box_verdes(payload: BoxVerdesStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    started = trace_time(payload.desde)
+    active = list(db.scalars(select(BoxVerdesPeriod).where(BoxVerdesPeriod.hasta.is_(None))))
+    for previous in active:
+        close_period(previous, started, actor)
+        write_audit(db, user_id=actor.id, table="box_verdes_periodo", record_id=str(previous.id), action="CIERRE", after=audit_payload(previous), reason="Nuevo box activo hacia Verdes")
+    row = BoxVerdesPeriod(box=payload.box.strip(), desde=started, id_usuario_inicio=actor.id)
+    db.add(row); db.flush()
+    write_audit(db, user_id=actor.id, table="box_verdes_periodo", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Activacion de box hacia Verdes")
+    db.commit(); db.refresh(row)
+    return row
+
+
+@router.patch("/trazabilidad/box-verdes/{period_id}", response_model=BoxVerdesPeriodOutput)
+def finish_box_verdes(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    row = db.get(BoxVerdesPeriod, period_id)
+    if row is None: raise HTTPException(status_code=404, detail="Periodo box-Verdes inexistente")
+    before = audit_payload(row); close_period(row, payload.hasta, actor)
+    write_audit(db, user_id=actor.id, table="box_verdes_periodo", record_id=str(row.id), action="CIERRE", before=before, after=audit_payload(row), reason="Fin de box hacia Verdes")
+    db.commit(); db.refresh(row); return row
+
+
+@router.post("/trazabilidad/ksider-silo", response_model=KsiderSiloPeriodOutput, status_code=201)
+def start_ksider_silo(payload: KsiderSiloStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    started, receiver = trace_time(payload.desde), payload.receptor.strip().upper()
+    active = list(db.scalars(select(KsiderSiloPeriod).where(KsiderSiloPeriod.receptor == receiver, KsiderSiloPeriod.hasta.is_(None))))
+    for previous in active:
+        close_period(previous, started, actor)
+        write_audit(db, user_id=actor.id, table="ksider_silo_periodo", record_id=str(previous.id), action="CIERRE", after=audit_payload(previous), reason="Cambio de receptor K-Sider")
+    row = KsiderSiloPeriod(receptor=receiver, silo=payload.silo, desde=started, id_usuario_inicio=actor.id)
+    db.add(row); db.flush()
+    write_audit(db, user_id=actor.id, table="ksider_silo_periodo", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Asignacion receptor K-Sider")
+    db.commit(); db.refresh(row); return row
+
+
+@router.patch("/trazabilidad/ksider-silo/{period_id}", response_model=KsiderSiloPeriodOutput)
+def finish_ksider_silo(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    row = db.get(KsiderSiloPeriod, period_id)
+    if row is None: raise HTTPException(status_code=404, detail="Periodo K-Sider-silo inexistente")
+    before = audit_payload(row); close_period(row, payload.hasta, actor)
+    write_audit(db, user_id=actor.id, table="ksider_silo_periodo", record_id=str(row.id), action="CIERRE", before=before, after=audit_payload(row), reason="Fin de receptor K-Sider")
+    db.commit(); db.refresh(row); return row
+
+
+@router.post("/trazabilidad/silo-linea", response_model=SiloLinePeriodOutput, status_code=201)
+def start_silo_line(payload: SiloLineStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    if (payload.silo <= 8 and payload.linea != "L7") or (payload.silo >= 9 and payload.linea != "L6"):
+        raise HTTPException(status_code=422, detail="El silo no pertenece fisicamente a la linea seleccionada")
+    row = SiloLinePeriod(silo=payload.silo, linea=payload.linea, desde=trace_time(payload.desde), id_usuario_inicio=actor.id)
+    db.add(row); db.flush()
+    write_audit(db, user_id=actor.id, table="silo_linea_periodo", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Asociacion temporal silo-linea")
+    db.commit(); db.refresh(row); return row
+
+
+@router.patch("/trazabilidad/silo-linea/{period_id}", response_model=SiloLinePeriodOutput)
+def finish_silo_line(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    row = db.get(SiloLinePeriod, period_id)
+    if row is None: raise HTTPException(status_code=404, detail="Periodo silo-linea inexistente")
+    before = audit_payload(row); close_period(row, payload.hasta, actor)
+    write_audit(db, user_id=actor.id, table="silo_linea_periodo", record_id=str(row.id), action="CIERRE", before=before, after=audit_payload(row), reason="Fin de asociacion silo-linea")
+    db.commit(); db.refresh(row); return row
+
+
+@router.post("/lineas/{linea}/producto-formato", response_model=LineProductFormatPeriodOutput, status_code=201)
+def start_line_product_format(linea: str, payload: LineProductFormatStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    if linea != payload.linea:
+        raise HTTPException(status_code=422, detail="La linea de la ruta y el periodo deben coincidir")
+    started = trace_time(payload.desde)
+    active = list(db.scalars(select(LineProductFormatPeriod).where(LineProductFormatPeriod.linea == linea, LineProductFormatPeriod.hasta.is_(None))))
+    for previous in active:
+        close_period(previous, started, actor)
+        write_audit(db, user_id=actor.id, table="linea_producto_formato_periodo", record_id=str(previous.id), action="CIERRE", after=audit_payload(previous), reason="Cambio de producto/formato de linea")
+    row = LineProductFormatPeriod(linea=linea, producto=payload.producto.strip(), formato=payload.formato.strip(), desde=started, id_usuario_inicio=actor.id)
+    db.add(row); db.flush()
+    write_audit(db, user_id=actor.id, table="linea_producto_formato_periodo", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Producto/formato de linea")
+    db.commit(); db.refresh(row); return row
+
+
+@router.patch("/lineas/{linea}/producto-formato/{period_id}", response_model=LineProductFormatPeriodOutput)
+def finish_line_product_format(linea: str, period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor)
+    row = db.get(LineProductFormatPeriod, period_id)
+    if row is None or row.linea != linea: raise HTTPException(status_code=404, detail="Periodo producto-formato inexistente")
+    before = audit_payload(row); close_period(row, payload.hasta, actor)
+    write_audit(db, user_id=actor.id, table="linea_producto_formato_periodo", record_id=str(row.id), action="CIERRE", before=before, after=audit_payload(row), reason="Fin de producto/formato de linea")
+    db.commit(); db.refresh(row); return row
+
+
+@router.get("/mua/{mua_id}/trazabilidad")
+def mua_traceability(mua_id: UUID, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor, read=True)
+    mua = db.get(MUA, mua_id)
+    if mua is None:
+        raise HTTPException(status_code=404, detail="MUA inexistente")
+    edges: list[dict] = []
+    presences = list(db.scalars(select(MuaBoxPresence).where(MuaBoxPresence.id_mua == mua.id).order_by(MuaBoxPresence.desde)))
+    for presence in presences:
+        edges.append({"relacion": "MUA->BOX", "origen": mua.codigo, "destino": f"BOX-{presence.box}", "desde": presence.desde, "hasta": presence.hasta, "certeza": presence.certeza, "id_periodo": str(presence.id)})
+        box_periods = [row for row in db.scalars(select(BoxVerdesPeriod).where(BoxVerdesPeriod.box == presence.box)) if overlaps(presence.desde, presence.hasta, row.desde, row.hasta)]
+        for box_period in box_periods:
+            edges.append({"relacion": "BOX->VERDES", "origen": f"BOX-{presence.box}", "destino": "VERDES", "desde": max(presence.desde, box_period.desde), "hasta": box_period.hasta if presence.hasta is None else presence.hasta if box_period.hasta is None else min(presence.hasta, box_period.hasta), "certeza": "POTENCIAL", "id_periodo": str(box_period.id)})
+            ksider_periods = [row for row in db.scalars(select(KsiderSiloPeriod)) if overlaps(box_period.desde, box_period.hasta, row.desde, row.hasta)]
+            for ksider in ksider_periods:
+                edges.append({"relacion": "K-SIDER->SILO", "origen": ksider.receptor, "destino": f"SILO-{ksider.silo}", "desde": ksider.desde, "hasta": ksider.hasta, "certeza": "INFERIDA", "id_periodo": str(ksider.id)})
+                line_periods = [row for row in db.scalars(select(SiloLinePeriod).where(SiloLinePeriod.silo == ksider.silo)) if overlaps(ksider.desde, ksider.hasta, row.desde, row.hasta)]
+                for silo_line in line_periods:
+                    edges.append({"relacion": "SILO->LINEA", "origen": f"SILO-{ksider.silo}", "destino": silo_line.linea, "desde": silo_line.desde, "hasta": silo_line.hasta, "certeza": "INFERIDA", "id_periodo": str(silo_line.id)})
+                    products = [row for row in db.scalars(select(LineProductFormatPeriod).where(LineProductFormatPeriod.linea == silo_line.linea)) if overlaps(silo_line.desde, silo_line.hasta, row.desde, row.hasta)]
+                    edges.extend({"relacion": "LINEA->PRODUCTO_FORMATO", "origen": silo_line.linea, "destino": f"{row.producto} / {row.formato}", "desde": row.desde, "hasta": row.hasta, "certeza": "INFERIDA", "id_periodo": str(row.id)} for row in products)
+    return {"mua": {"id": str(mua.id), "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": str(mua.id_preparador), "composicion": mua.composicion}, "aristas": sorted(edges, key=lambda edge: edge["desde"]), "sin_proporciones_inventadas": True}
 
 
 @router.post("/analitica/recalcular", response_model=AnalyticsRebuildOutput)

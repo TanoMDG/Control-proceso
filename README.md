@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2 y F3 estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3 y F4 estan disponibles.
 
 ## Requisitos
 
@@ -50,6 +50,14 @@ Las advertencias de dispersion usan exclusivamente las versiones configuradas de
 ## Operacion Offline
 
 Los formularios F1 y F3 guardan cargas sin conexion en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicacion reintenta la sincronizacion sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Los rechazos 4xx se muestran al operador y no se encolan como si fueran recuperables. Las validaciones industriales y los conflictos de revision siguen resolviendose exclusivamente en backend.
+
+## Trazabilidad MUA (F4)
+
+M4 registra la identidad `MUA-AAAA-MMDD-NN`, el preparador y los componentes declarados. Solo SUPERVISION/ADMIN puede crear una MUA. M5 registra la presencia temporal de una MUA existente en un box; varias MUA pueden coexistir sin calcular proporciones o toneladas.
+
+`POST/PATCH /api/v1/trazabilidad/{mua-box,box-verdes,ksider-silo,silo-linea}` y `POST/PATCH /api/v1/lineas/{linea}/producto-formato` retienen inicio, fin y usuario. Los cambios de box a Verdes, receptor K-Sider y producto/formato cierran el periodo activo anterior. `GET /api/v1/mua/{id}/trazabilidad` devuelve la secuencia cronologica con certeza `CONFIRMADA`, `POTENCIAL` o `INFERIDA`.
+
+La web expone M4/M5 y conserva en IndexedDB las presencias MUA-box que no puedan sincronizarse, con el endpoint y payload originales.
 
 ## Pruebas
 
