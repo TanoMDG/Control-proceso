@@ -1,4 +1,4 @@
-# Arquitectura F0
+# Arquitectura F0-F7
 
 F0 usa PostgreSQL como fuente transaccional, FastAPI para reglas y autorizacion, y una PWA React para el puesto de planta. El backend es el unico componente autorizado a validar permisos y reglas de negocio.
 
@@ -25,3 +25,9 @@ Las migraciones no contienen datos maestros productivos. El primer ADMIN se crea
 La interfaz `ReadOnlyPlcAdapter` define exclusivamente `read(tags)` y no ofrece escritura. El simulador devuelve solo los valores de prueba configurados de forma explicita. Las lecturas se almacenan en `plc_lectura_cruda` con instante de fuente, instante de adquisicion, valor crudo/escalado, unidad, calidad y adaptador. `plc_lectura_agregada` conserva min/max/promedio/ultimo valor por ventana; las muestras de calidad distinta de `GOOD` no intervienen en las medidas numericas. La retencion configurada elimina crudo, hechos asociados y agregados vencidos durante una ejecucion del simulador.
 
 Cada lectura buena genera un `hecho_medicion_temporal` de origen `plc_lectura_cruda`, con identificadores de fuente/tag y calidad en el contexto. El recalculo operativo elimina solo sus propios hechos para no borrar esta proyeccion F6. `plc_estado_adquisicion` expone intentos, ultima muestra y error a SUPERVISION, sin activar planificador ni conexion externa.
+
+## F7: laboratorio configurable
+
+`laboratorio_punto_muestreo`, `laboratorio_determinacion`, `laboratorio_unidad`, `laboratorio_punto_determinacion` y `laboratorio_frecuencia_control` son maestros de configuracion vacios. Sus filas con vigencia, no valores por defecto de la aplicacion, definen que puede registrar P21 y que espera P22. Una determinacion es numerica o granulometrica; `laboratorio_configuracion_tamiz` hace explicita la torre permitida por punto/determinacion.
+
+`analisis_laboratorio` conserva UUID de idempotencia, revision/estado, instante de muestra y vinculos declarados opcionales a MUA, stock M3, proceso, silo y producto activo. Cada resultado numerico retiene la version de limite aplicada en `registro_limite_aplicado`; `evento_desvio_laboratorio` existe solo si ese limite tiene un plan de reaccion configurado. Las ocurrencias faltantes de agenda no crean ninguno de los dos. El recalculo proyecta las mediciones y conteos F7 sin convertir los hechos analiticos en fuente de verdad.

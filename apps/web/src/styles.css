@@ -34,3 +34,8 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .traceability { border-top: 1px solid #4f7780; padding-top: 16px; }
 .traceability form { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .traceability h2 { margin-top: 0; }
+.warning { color: #ffcf7a !important; font-weight: bold; }
+.agenda { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.agenda article { background: #102b35; border-radius: 6px; display: grid; gap: 5px; padding: 10px; }
+.agenda article strong { color: #ffbd59; }
+fieldset.thickness { display: grid; gap: 10px; }

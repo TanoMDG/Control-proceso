@@ -11,13 +11,14 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, PlcAcquisitionStatus, PlcReadSource, PlcReadTag, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
-from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PlcAcquisitionStatusOutput, PlcReadSourceInput, PlcReadSourceOutput, PlcReadSourcePatch, PlcReadTagInput, PlcReadTagOutput, PlcReadTagPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, LaboratoryAnalysis, LaboratoryAnalysisResult, LaboratoryConfigurationSieve, LaboratoryDetermination, LaboratoryDeviationEvent, LaboratoryFrequency, LaboratoryPointDetermination, LaboratorySamplePoint, LaboratorySieve, LaboratoryUnit, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, PlcAcquisitionStatus, PlcReadSource, PlcReadTag, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
+from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LaboratoryActionInput, LaboratoryAnalysisInput, LaboratoryAnalysisOutput, LaboratoryAnalysisUpdateInput, LaboratoryDeterminationInput, LaboratoryDeterminationOutput, LaboratoryFrequencyInput, LaboratoryMasterInput, LaboratoryMasterOutput, LaboratoryPointDeterminationInput, LaboratoryPointInput, LaboratoryPointOutput, LaboratorySieveConfigurationInput, LaboratorySieveInput, LaboratorySieveOutput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PlcAcquisitionStatusOutput, PlcReadSourceInput, PlcReadSourceOutput, PlcReadSourcePatch, PlcReadTagInput, PlcReadTagOutput, PlcReadTagPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
 from app.services.analytics import rebuild_analytics
 from app.services.plc import acquire_test_samples
+from app.services.laboratory import PENDING_CONFIGURATION, agenda as laboratory_agenda, analysis_output, store_analysis
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
@@ -138,7 +139,207 @@ def overlaps(start: datetime, end: datetime | None, other_start: datetime, other
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F6"}
+    return {"status": "ok", "phase": "F7"}
+
+
+def assert_laboratory_access(db: Session, actor: User, *, write: bool = False) -> None:
+    role = get_role(db, actor).nombre
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="Permiso de laboratorio insuficiente")
+    if role == "CARGA" and actor.sector != "Laboratorio":
+        raise HTTPException(status_code=403, detail="CARGA solo opera Laboratorio")
+
+
+def lab_configuration_output(db: Session, on_date: date) -> dict:
+    configurations = []
+    statement = select(LaboratoryPointDetermination).where(LaboratoryPointDetermination.activo.is_(True), LaboratoryPointDetermination.vigente_desde <= on_date, or_(LaboratoryPointDetermination.vigente_hasta_exclusiva.is_(None), LaboratoryPointDetermination.vigente_hasta_exclusiva > on_date))
+    for row in db.scalars(statement):
+        point, determination, unit = db.get(LaboratorySamplePoint, row.id_punto), db.get(LaboratoryDetermination, row.id_determinacion), db.get(LaboratoryUnit, row.id_unidad)
+        frequencies = list(db.scalars(select(LaboratoryFrequency).where(LaboratoryFrequency.id_configuracion == row.id, LaboratoryFrequency.activo.is_(True), LaboratoryFrequency.vigente_desde <= datetime.combine(on_date, datetime.max.time(), tzinfo=timezone.utc), or_(LaboratoryFrequency.vigente_hasta_exclusiva.is_(None), LaboratoryFrequency.vigente_hasta_exclusiva > datetime.combine(on_date, datetime.min.time(), tzinfo=timezone.utc)))))
+        sieves = list(db.scalars(select(LaboratorySieve).join(LaboratoryConfigurationSieve, LaboratoryConfigurationSieve.id_tamiz == LaboratorySieve.id).where(LaboratoryConfigurationSieve.id_configuracion == row.id, LaboratorySieve.activo.is_(True))))
+        configurations.append({"id": str(row.id), "punto": {"id": str(point.id), "codigo": point.codigo, "descripcion": point.descripcion}, "determinacion": {"id": str(determination.id), "codigo": determination.codigo, "descripcion": determination.descripcion, "tipo_resultado": determination.tipo_resultado}, "unidad": {"id": str(unit.id), "codigo": unit.codigo}, "id_limite": row.id_limite, "frecuencias": [{"id": str(item.id), "intervalo_horas": item.intervalo_horas, "vigente_desde": item.vigente_desde, "vigente_hasta_exclusiva": item.vigente_hasta_exclusiva} for item in frequencies], "tamices": [{"id": str(item.id), "codigo": item.codigo, "torre": item.torre, "descripcion": item.descripcion} for item in sieves]})
+    ready = [row for row in configurations if row["frecuencias"] and (row["determinacion"]["tipo_resultado"] != "GRANULOMETRIA" or row["tamices"])]
+    return {"configuraciones": configurations, "mensaje_configuracion": None if ready else PENDING_CONFIGURATION}
+
+
+@router.get("/laboratorio/configuracion")
+def get_laboratory_configuration(fecha: date = Query(default_factory=date.today), actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return lab_configuration_output(db, fecha)
+
+
+@router.get("/laboratorio/unidades", response_model=list[LaboratoryMasterOutput])
+def list_laboratory_units(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return list(db.scalars(select(LaboratoryUnit).where(LaboratoryUnit.activo.is_(True)).order_by(LaboratoryUnit.codigo)))
+
+
+@router.post("/laboratorio/unidades", response_model=LaboratoryMasterOutput, status_code=201)
+def create_laboratory_unit(payload: LaboratoryMasterInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = LaboratoryUnit(**payload.model_dump())
+    db.add(item); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_unidad", record_id=str(item.id), action="ALTA", after=audit_payload(item), reason="Configuracion F7")
+    db.commit(); db.refresh(item); return item
+
+
+@router.get("/laboratorio/puntos-muestreo", response_model=list[LaboratoryPointOutput])
+def list_laboratory_points(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return list(db.scalars(select(LaboratorySamplePoint).where(LaboratorySamplePoint.activo.is_(True)).order_by(LaboratorySamplePoint.codigo)))
+
+
+@router.post("/laboratorio/puntos-muestreo", response_model=LaboratoryPointOutput, status_code=201)
+def create_laboratory_point(payload: LaboratoryPointInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = LaboratorySamplePoint(**payload.model_dump())
+    db.add(item); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_punto_muestreo", record_id=str(item.id), action="ALTA", after=audit_payload(item), reason="Configuracion F7")
+    db.commit(); db.refresh(item); return item
+
+
+@router.get("/laboratorio/determinaciones", response_model=list[LaboratoryDeterminationOutput])
+def list_laboratory_determinations(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return list(db.scalars(select(LaboratoryDetermination).where(LaboratoryDetermination.activo.is_(True)).order_by(LaboratoryDetermination.codigo)))
+
+
+@router.post("/laboratorio/determinaciones", response_model=LaboratoryDeterminationOutput, status_code=201)
+def create_laboratory_determination(payload: LaboratoryDeterminationInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = LaboratoryDetermination(**payload.model_dump())
+    db.add(item); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_determinacion", record_id=str(item.id), action="ALTA", after=audit_payload(item), reason="Configuracion F7")
+    db.commit(); db.refresh(item); return item
+
+
+@router.get("/laboratorio/tamices", response_model=list[LaboratorySieveOutput])
+def list_laboratory_sieves(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return list(db.scalars(select(LaboratorySieve).where(LaboratorySieve.activo.is_(True)).order_by(LaboratorySieve.torre, LaboratorySieve.codigo)))
+
+
+@router.post("/laboratorio/tamices", response_model=LaboratorySieveOutput, status_code=201)
+def create_laboratory_sieve(payload: LaboratorySieveInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = LaboratorySieve(**payload.model_dump())
+    db.add(item); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_tamiz", record_id=str(item.id), action="ALTA", after=audit_payload(item), reason="Configuracion F7")
+    db.commit(); db.refresh(item); return item
+
+
+@router.post("/laboratorio/configuraciones", status_code=201)
+def create_laboratory_configuration(payload: LaboratoryPointDeterminationInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if not all((db.get(LaboratorySamplePoint, payload.id_punto), db.get(LaboratoryDetermination, payload.id_determinacion), db.get(LaboratoryUnit, payload.id_unidad))) or payload.id_limite and db.get(Limit, payload.id_limite) is None:
+        raise HTTPException(status_code=422, detail="El punto, determinacion, unidad o limite configurado no existe")
+    for row in db.scalars(select(LaboratoryPointDetermination).where(LaboratoryPointDetermination.id_punto == payload.id_punto, LaboratoryPointDetermination.id_determinacion == payload.id_determinacion, LaboratoryPointDetermination.activo.is_(True))):
+        if (payload.vigente_hasta_exclusiva is None or row.vigente_desde < payload.vigente_hasta_exclusiva) and (row.vigente_hasta_exclusiva is None or payload.vigente_desde < row.vigente_hasta_exclusiva):
+            raise HTTPException(status_code=422, detail="La configuracion punto-determinacion se solapa con una version existente")
+    row = LaboratoryPointDetermination(**payload.model_dump())
+    db.add(row); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_punto_determinacion", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Configuracion F7 versionada")
+    db.commit(); return {"id": str(row.id)}
+
+
+@router.post("/laboratorio/frecuencias", status_code=201)
+def create_laboratory_frequency(payload: LaboratoryFrequencyInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if payload.vigente_desde.tzinfo is None or payload.vigente_hasta_exclusiva and payload.vigente_hasta_exclusiva.tzinfo is None or db.get(LaboratoryPointDetermination, payload.id_configuracion) is None:
+        raise HTTPException(status_code=422, detail="La frecuencia requiere configuracion existente y fechas con zona horaria")
+    for row in db.scalars(select(LaboratoryFrequency).where(LaboratoryFrequency.id_configuracion == payload.id_configuracion, LaboratoryFrequency.activo.is_(True))):
+        if (payload.vigente_hasta_exclusiva is None or row.vigente_desde < payload.vigente_hasta_exclusiva) and (row.vigente_hasta_exclusiva is None or payload.vigente_desde < row.vigente_hasta_exclusiva):
+            raise HTTPException(status_code=422, detail="La frecuencia se solapa con una version existente")
+    row = LaboratoryFrequency(**payload.model_dump())
+    db.add(row); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_frecuencia_control", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Frecuencia F7 configurada")
+    db.commit(); return {"id": str(row.id)}
+
+
+@router.post("/laboratorio/configuraciones/{configuration_id}/tamices", status_code=201)
+def configure_laboratory_sieve(configuration_id: UUID, payload: LaboratorySieveConfigurationInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    configuration, sieve = db.get(LaboratoryPointDetermination, configuration_id), db.get(LaboratorySieve, payload.id_tamiz)
+    if configuration is None or sieve is None or db.get(LaboratoryDetermination, configuration.id_determinacion).tipo_resultado != "GRANULOMETRIA":
+        raise HTTPException(status_code=422, detail="El tamiz requiere una configuracion granulometrica y un tamiz existente")
+    row = LaboratoryConfigurationSieve(id_configuracion=configuration_id, id_tamiz=payload.id_tamiz)
+    db.add(row); db.flush(); write_audit(db, user_id=actor.id, table="laboratorio_configuracion_tamiz", record_id=str(row.id), action="ALTA", after=audit_payload(row), reason="Torre de tamices F7")
+    db.commit(); return {"id": str(row.id)}
+
+
+@router.post("/laboratorio/analisis", response_model=LaboratoryAnalysisOutput, status_code=201)
+def create_laboratory_analysis(payload: LaboratoryAnalysisInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor, write=True)
+    existing = db.scalar(select(LaboratoryAnalysis).where(LaboratoryAnalysis.client_uuid == payload.client_uuid))
+    if existing is not None:
+        return analysis_output(db, existing)
+    analysis = LaboratoryAnalysis(client_uuid=payload.client_uuid, id_punto=payload.id_punto, fecha_operativa=payload.fecha_operativa, turno_codigo=payload.turno_codigo, instante_muestreo=payload.instante_muestreo, creado_por=actor.id)
+    db.add(analysis); db.flush(); store_analysis(db, analysis, payload)
+    write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="ALTA", after=audit_payload(analysis), reason="P21 analisis configurado")
+    db.commit(); return analysis_output(db, analysis)
+
+
+@router.get("/laboratorio/analisis", response_model=list[LaboratoryAnalysisOutput])
+def list_laboratory_analyses(desde: date | None = None, hasta: date | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    role = get_role(db, actor).nombre
+    statement = select(LaboratoryAnalysis)
+    if role == "CARGA":
+        lower = date.today() - timedelta(days=6)
+        if desde and desde < lower:
+            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
+        statement = statement.where(LaboratoryAnalysis.fecha_operativa >= lower)
+    if desde: statement = statement.where(LaboratoryAnalysis.fecha_operativa >= desde)
+    if hasta: statement = statement.where(LaboratoryAnalysis.fecha_operativa <= hasta)
+    return [analysis_output(db, row) for row in db.scalars(statement.order_by(LaboratoryAnalysis.instante_muestreo.desc()))]
+
+
+@router.put("/laboratorio/analisis/{analysis_id}", response_model=LaboratoryAnalysisOutput)
+def update_laboratory_analysis(analysis_id: UUID, payload: LaboratoryAnalysisUpdateInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor, write=True)
+    analysis = db.get(LaboratoryAnalysis, analysis_id)
+    if analysis is None: raise HTTPException(status_code=404, detail="Analisis inexistente")
+    role = get_role(db, actor).nombre
+    if analysis.revision != payload.revision: raise HTTPException(status_code=409, detail="Revision desactualizada")
+    if role == "CARGA" and (analysis.estado != "BORRADOR" or analysis.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores de laboratorio")
+    if analysis.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
+    before = audit_payload(analysis); store_analysis(db, analysis, payload); analysis.revision += 1; analysis.motivo_correccion = payload.motivo_correccion
+    write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="CORRECCION", before=before, after=audit_payload(analysis), reason=payload.motivo_correccion)
+    db.commit(); return analysis_output(db, analysis)
+
+
+@router.post("/laboratorio/analisis/{analysis_id}/cerrar", response_model=LaboratoryAnalysisOutput)
+def close_laboratory_analysis(analysis_id: UUID, payload: LaboratoryActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor, write=True)
+    analysis = db.get(LaboratoryAnalysis, analysis_id)
+    if analysis is None or analysis.estado != "BORRADOR": raise HTTPException(status_code=422, detail="Solo se cierran analisis borrador")
+    if get_role(db, actor).nombre == "CARGA" and analysis.creado_por != actor.id: raise HTTPException(status_code=403, detail="CARGA solo cierra sus analisis")
+    analysis.estado = "CERRADO"; write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="CIERRE", after=audit_payload(analysis), reason=payload.comentario)
+    db.commit(); return analysis_output(db, analysis)
+
+
+@router.get("/laboratorio/agenda")
+def get_laboratory_agenda(desde: datetime, hasta: datetime, id_punto: UUID | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    return laboratory_agenda(db, desde, hasta, id_punto)
+
+
+@router.get("/laboratorio/desvios")
+def list_laboratory_deviations(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor)
+    statement = select(LaboratoryDeviationEvent)
+    if get_role(db, actor).nombre == "CARGA":
+        statement = statement.join(LaboratoryAnalysisResult, LaboratoryAnalysisResult.id == LaboratoryDeviationEvent.id_resultado).join(LaboratoryAnalysis, LaboratoryAnalysis.id == LaboratoryAnalysisResult.id_analisis).where(LaboratoryAnalysis.fecha_operativa >= date.today() - timedelta(days=6))
+    return list(db.scalars(statement.order_by(LaboratoryDeviationEvent.created_at.desc())))
+
+
+@router.post("/laboratorio/desvios/{event_id}/{action}")
+def transition_laboratory_deviation(event_id: UUID, action: str, payload: LaboratoryActionInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_laboratory_access(db, actor, write=True)
+    event = db.get(LaboratoryDeviationEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Desvio de laboratorio inexistente")
+    target = {"tratar": "EN_TRATAMIENTO", "verificar": "VERIFICADO", "cerrar": "CERRADO"}.get(action)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Accion de desvio inexistente")
+    role, previous = get_role(db, actor).nombre, event.estado
+    if action == "tratar" and previous not in {"ABIERTO", "ESCALADO", "VENCIDO"}:
+        raise HTTPException(status_code=422, detail="Transicion de desvio invalida")
+    if action == "verificar" and previous != "EN_TRATAMIENTO":
+        raise HTTPException(status_code=422, detail="El desvio debe tratarse antes de verificar")
+    if action == "cerrar" and (role not in {"SUPERVISION", "ADMIN"} or previous != "VERIFICADO"):
+        raise HTTPException(status_code=422, detail="El cierre requiere SUPERVISION/ADMIN y verificacion")
+    event.estado = target
+    write_audit(db, user_id=actor.id, table="evento_desvio_laboratorio", record_id=str(event.id), action=action.upper(), before={"estado": previous}, after=audit_payload(event), reason=payload.comentario)
+    db.commit(); db.refresh(event)
+    return {"id": str(event.id), "estado": event.estado}
 
 
 def assert_plc_tag_values(tag: PlcReadTag) -> None:

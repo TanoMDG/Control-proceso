@@ -4,12 +4,9 @@ import "./styles.css";
 import { listPending, makePending, savePending, synchronize, type PendingRecord } from "./offline";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1";
-const RESPONSIBLES_PENDING = "Pendiente de configuracion: no hay responsables de mantenimiento configurados.";
-type Mua = { id: string; codigo: string; fecha_generacion: string };
-type Trace = { aristas: Array<{ relacion: string; origen: string; destino: string; desde: string; hasta: string | null; certeza: string }> };
-type Equipment = { id: string; codigo: string; descripcion: string; sector: string };
-type Responsible = { id: string; legajo: string; apellido_nombre: string };
-type ResponsibleResponse = { responsables: Responsible[]; mensaje_configuracion: string | null };
+type Sieve = { id: string; codigo: string; torre: string; descripcion: string };
+type Configuration = { id: string; punto: { id: string; codigo: string; descripcion: string }; determinacion: { codigo: string; descripcion: string; tipo_resultado: "NUMERICO" | "GRANULOMETRIA" }; unidad: { codigo: string }; id_limite: string | null; frecuencias: unknown[]; tamices: Sieve[] };
+type Agenda = { agenda: Array<{ id_configuracion: string; id_punto: string; esperado_en: string; vence_en: string; cumplido: boolean }>; cumplimiento: { esperados: number; realizados: number; porcentaje: number | null }; mensaje_configuracion: string | null };
 
 function App() {
   const [username, setUsername] = useState("");
@@ -17,128 +14,77 @@ function App() {
   const [token, setToken] = useState(sessionStorage.getItem("access_token") ?? "");
   const [message, setMessage] = useState("Ingrese con una cuenta habilitada.");
   const [pending, setPending] = useState<PendingRecord[]>([]);
-  const [muas, setMuas] = useState<Mua[]>([]);
-  const [preparador, setPreparador] = useState("");
-  const [componente, setComponente] = useState("");
-  const [muaId, setMuaId] = useState("");
-  const [box, setBox] = useState("");
-  const [trace, setTrace] = useState<Trace | null>(null);
-  const [equipment, setEquipment] = useState<Equipment[]>([]);
-  const [responsibles, setResponsibles] = useState<Responsible[]>([]);
-  const [responsibleMessage, setResponsibleMessage] = useState<string | null>(null);
-  const [equipmentId, setEquipmentId] = useState("");
-  const [responsibleId, setResponsibleId] = useState("");
-  const [maintenanceType, setMaintenanceType] = useState("CORRECTIVO");
-  const [maintenanceDescription, setMaintenanceDescription] = useState("");
-  const [madirexNote, setMadirexNote] = useState("");
+  const [configuration, setConfiguration] = useState<Configuration[]>([]);
+  const [configurationMessage, setConfigurationMessage] = useState<string | null>(null);
+  const [pointId, setPointId] = useState("");
+  const [shift, setShift] = useState("ACTUAL");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [sieveValues, setSieveValues] = useState<Record<string, string>>({});
+  const [mua, setMua] = useState("");
+  const [stock, setStock] = useState("");
+  const [processRecord, setProcessRecord] = useState("");
+  const [silo, setSilo] = useState("");
+  const [product, setProduct] = useState("");
+  const [agenda, setAgenda] = useState<Agenda | null>(null);
 
-  useEffect(() => {
-    if (!token) return;
-    const refresh = () => { void listPending().then(setPending); };
-    const online = async () => { await synchronize(token, apiUrl); refresh(); };
-    refresh();
-    window.addEventListener("online", online);
-    return () => window.removeEventListener("online", online);
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    void loadMuas();
-    void loadMaintenanceConfiguration();
-  }, [token]);
-
-  async function request(route: string, payload?: Record<string, unknown>, method: "GET" | "POST" = "GET") {
+  async function request(route: string, payload?: Record<string, unknown>, method: "GET" | "POST" | "PUT" = "GET") {
     const response = await fetch(`${apiUrl}${route}`, { method, headers: { Authorization: `Bearer ${token}`, ...(payload ? { "Content-Type": "application/json" } : {}) }, body: payload ? JSON.stringify(payload) : undefined });
     if (!response.ok) throw Object.assign(new Error(await response.text()), { status: response.status });
     return response.json();
   }
 
-  async function loadMuas() {
+  async function loadConfiguration() {
     try {
-      const rows = await request("/mua") as Mua[];
-      setMuas(rows);
-      if (!muaId && rows[0]) setMuaId(rows[0].id);
-    } catch (error) { setMessage(`No fue posible cargar MUA: ${String(error)}`); }
+      const data = await request("/laboratorio/configuracion") as { configuraciones: Configuration[]; mensaje_configuracion: string | null };
+      setConfiguration(data.configuraciones);
+      setConfigurationMessage(data.mensaje_configuracion);
+      if (!pointId && data.configuraciones[0]) setPointId(data.configuraciones[0].punto.id);
+    } catch (error) { setMessage(`No fue posible cargar configuracion P21: ${String(error)}`); }
   }
 
-  async function loadMaintenanceConfiguration() {
-    try {
-      const [configuredEquipment, configuredResponsibles] = await Promise.all([
-        request("/mantenimiento/equipos") as Promise<Equipment[]>,
-        request("/mantenimiento/responsables") as Promise<ResponsibleResponse>,
-      ]);
-      setEquipment(configuredEquipment);
-      setResponsibles(configuredResponsibles.responsables);
-      setResponsibleMessage(configuredResponsibles.mensaje_configuracion);
-      if (!equipmentId && configuredEquipment[0]) setEquipmentId(configuredEquipment[0].id);
-      if (!responsibleId && configuredResponsibles.responsables[0]) setResponsibleId(configuredResponsibles.responsables[0].id);
-    } catch (error) { setMessage(`No fue posible cargar la configuracion M7: ${String(error)}`); }
-  }
+  useEffect(() => {
+    if (!token) return;
+    void loadConfiguration();
+    void listPending().then(setPending);
+    const online = async () => { await synchronize(token, apiUrl); setPending(await listPending()); };
+    window.addEventListener("online", online);
+    return () => window.removeEventListener("online", online);
+  }, [token]);
 
   async function login(event: FormEvent) {
     event.preventDefault();
     try {
       const result = await request("/auth/login", { username, password }, "POST") as { access_token: string };
-      sessionStorage.setItem("access_token", result.access_token);
-      setToken(result.access_token);
-      setMessage("Sesion iniciada.");
+      sessionStorage.setItem("access_token", result.access_token); setToken(result.access_token); setMessage("Sesion iniciada.");
     } catch { setMessage("No fue posible iniciar sesion. Verifique sus credenciales."); }
   }
 
-  async function createMua(event: FormEvent) {
-    event.preventDefault();
-    try {
-      const result = await request("/mua", { id_preparador: preparador, composicion: [{ componente }] }, "POST") as Mua;
-      setMuas((previous) => [...previous, result]);
-      setMuaId(result.id);
-      setComponente("");
-      setMessage(`${result.codigo} registrada.`);
-    } catch (error) { setMessage(`M4 no se guardo: ${String(error)}`); }
-  }
+  const selected = configuration.filter((item) => item.punto.id === pointId);
+  const points = Array.from(new Map(configuration.map((item) => [item.punto.id, item.punto])).values());
 
-  async function loadMuaInBox(event: FormEvent) {
+  async function saveAnalysis(event: FormEvent) {
     event.preventDefault();
-    const payload = { id_mua: muaId, box, desde: new Date().toISOString(), certeza: "CONFIRMADA" };
-    try {
-      await request("/trazabilidad/mua-box", payload, "POST");
-      setBox("");
-      setMessage("M5 sincronizado: presencia MUA-box registrada.");
-    } catch (error) {
-      const code = typeof error === "object" && error !== null && "status" in error ? Number(error.status) : 0;
-      if (code && code < 500) { setMessage(`M5 no se guardo: ${String(error)}`); return; }
-      await savePending({ ...makePending(crypto.randomUUID(), "m5", payload, navigator.onLine, String(error)), route: "/trazabilidad/mua-box", method: "POST" });
-      setPending(await listPending());
-      setMessage("M5 quedo en cola local para sincronizar.");
-    }
-  }
-
-  async function createMaintenance(event: FormEvent) {
-    event.preventDefault();
-    if (!responsibleId) { setMessage(responsibleMessage ?? RESPONSIBLES_PENDING); return; }
-    const clientUuid = crypto.randomUUID();
     const now = new Date();
-    const payload = { client_uuid: clientUuid, fecha_operativa: now.toISOString().slice(0, 10), turno_codigo: "ACTUAL", inicio: now.toISOString(), id_equipo: equipmentId, id_responsable: responsibleId, tipo: maintenanceType, descripcion: maintenanceDescription, campos_madirex: madirexNote ? { observacion: madirexNote } : {} };
+    const resultados = selected.filter((item) => item.determinacion.tipo_resultado === "NUMERICO" && values[item.id]?.trim()).map((item) => ({ id_configuracion: item.id, valor: values[item.id] }));
+    const granulometria = selected.filter((item) => item.determinacion.tipo_resultado === "GRANULOMETRIA").flatMap((item) => item.tamices.filter((mesh) => sieveValues[`${item.id}:${mesh.id}`]?.trim()).map((mesh) => ({ id_configuracion: item.id, id_tamiz: mesh.id, valor: sieveValues[`${item.id}:${mesh.id}`] })));
+    const payload = { client_uuid: crypto.randomUUID(), id_punto: pointId, fecha_operativa: now.toISOString().slice(0, 10), turno_codigo: shift, instante_muestreo: now.toISOString(), id_mua: mua || null, id_registro_stock: stock || null, id_registro_proceso: processRecord || null, silo: silo ? Number(silo) : null, id_producto: product || null, resultados, granulometria };
     try {
-      await request("/mantenimiento/registros", payload, "POST");
-      setMaintenanceDescription("");
-      setMadirexNote("");
-      setMessage("M7 registrado. Los campos Madirex son informativos.");
+      await request("/laboratorio/analisis", payload, "POST"); setValues({}); setSieveValues({}); setMessage("P21 registrado con determinaciones configuradas.");
     } catch (error) {
       const code = typeof error === "object" && error !== null && "status" in error ? Number(error.status) : 0;
-      if (code && code < 500) { setMessage(`M7 no se guardo: ${String(error)}`); return; }
-      await savePending({ ...makePending(clientUuid, "m7", payload, navigator.onLine, String(error)), route: "/mantenimiento/registros", method: "POST" });
-      setPending(await listPending());
-      setMessage("M7 quedo en cola local para sincronizar.");
+      if (code && code < 500) { setMessage(`P21 no se guardo: ${String(error)}`); return; }
+      await savePending({ ...makePending(payload.client_uuid, "m17", payload, navigator.onLine, String(error)), route: "/laboratorio/analisis", method: "POST" });
+      setPending(await listPending()); setMessage("P21 quedo en cola local para sincronizar.");
     }
   }
 
-  async function loadTrace() {
-    if (!muaId) return;
-    try { setTrace(await request(`/mua/${muaId}/trazabilidad`) as Trace); }
-    catch (error) { setMessage(`No fue posible consultar trazabilidad: ${String(error)}`); }
+  async function loadAgenda() {
+    const end = new Date(); const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+    try { setAgenda(await request(`/laboratorio/agenda?desde=${encodeURIComponent(start.toISOString())}&hasta=${encodeURIComponent(end.toISOString())}${pointId ? `&id_punto=${pointId}` : ""}`) as Agenda); }
+    catch (error) { setMessage(`No fue posible cargar P22: ${String(error)}`); }
   }
 
-  return <main><section className="panel"><p className="eyebrow">F5 · Mantenimiento, MUA y trazabilidad</p><h1>Control de Proceso</h1><p className="subtitle">Preparacion de Pasta</p>{!token ? <form onSubmit={login}><label>Usuario<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label><label>Contrasena<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label><button>Iniciar sesion</button></form> : <section className="forms"><div className="form-actions"><button type="button" onClick={loadMuas}>Actualizar MUA</button><button type="button" onClick={loadMaintenanceConfiguration}>Actualizar configuracion M7</button><button type="button" onClick={async () => { await synchronize(token, apiUrl); setPending(await listPending()); }}>Sincronizar pendientes</button></div><section className="traceability"><h2>M7 · Registro de mantenimiento</h2>{responsibleMessage && <p className="warning">{responsibleMessage}</p>}<form onSubmit={createMaintenance}><label>Equipo<select value={equipmentId} onChange={(event) => setEquipmentId(event.target.value)} required disabled={!equipment.length}><option value="">Seleccione un equipo</option>{equipment.map((item) => <option key={item.id} value={item.id}>{item.codigo} · {item.descripcion}</option>)}</select></label><label>Responsable de mantenimiento<select value={responsibleId} onChange={(event) => setResponsibleId(event.target.value)} required disabled={!responsibles.length}><option value="">Seleccione un responsable</option>{responsibles.map((item) => <option key={item.id} value={item.id}>{item.legajo} · {item.apellido_nombre}</option>)}</select></label><label>Tipo<select value={maintenanceType} onChange={(event) => setMaintenanceType(event.target.value)}><option>CORRECTIVO</option><option>PREVENTIVO</option><option>INSPECCION</option></select></label><label>Trabajo realizado<textarea value={maintenanceDescription} onChange={(event) => setMaintenanceDescription(event.target.value)} required /></label><label>Madirex (informativo)<input value={madirexNote} onChange={(event) => setMadirexNote(event.target.value)} placeholder="No genera limite ni desvio" /></label><button disabled={!equipment.length || !responsibles.length}>Registrar M7</button></form></section><section className="traceability"><h2>M4 · Identidad y composicion MUA</h2><form onSubmit={createMua}><label>UUID del preparador<input value={preparador} onChange={(event) => setPreparador(event.target.value)} required /></label><label>Componente<input value={componente} onChange={(event) => setComponente(event.target.value)} required /></label><button>Registrar MUA</button></form></section><section className="traceability"><h2>M5 · Carga y presencia en box</h2><form onSubmit={loadMuaInBox}><label>MUA<select value={muaId} onChange={(event) => setMuaId(event.target.value)} required><option value="">Seleccione una MUA</option>{muas.map((mua) => <option key={mua.id} value={mua.id}>{mua.codigo} · {mua.fecha_generacion}</option>)}</select></label><label>Box<input value={box} onChange={(event) => setBox(event.target.value)} required /></label><button>Registrar presencia</button></form></section><section className="traceability"><h2>Trazabilidad temporal</h2><button type="button" onClick={loadTrace}>Ver secuencia de la MUA</button>{trace && <ul>{trace.aristas.map((edge, index) => <li key={`${edge.relacion}-${index}`}>{edge.relacion}: {edge.origen} a {edge.destino} ({edge.certeza})</li>)}</ul>}</section><section className="pending"><h2>Cola offline</h2>{pending.length ? <ul>{pending.map((item) => <li key={item.id}>{item.module.toUpperCase()} · {item.status}{item.error ? `: ${item.error}` : ""}</li>)}</ul> : <p>Sin registros pendientes.</p>}</section></section>}<p className="status">{message}</p></section></main>;
+  return <main><section className="panel"><p className="eyebrow">F7 · M17 Laboratorio</p><h1>Control de Proceso</h1><p className="subtitle">P21 Analisis y P22 agenda de muestreo</p>{!token ? <form onSubmit={login}><label>Usuario<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label><label>Contrasena<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label><button>Iniciar sesion</button></form> : <section className="forms"><div className="form-actions"><button type="button" onClick={loadConfiguration}>Actualizar configuracion</button><button type="button" onClick={loadAgenda}>Actualizar P22 (ultimas 24 h)</button><button type="button" onClick={async () => { await synchronize(token, apiUrl); setPending(await listPending()); }}>Sincronizar pendientes</button></div>{configurationMessage && <p className="warning">{configurationMessage}</p>}<section className="traceability"><h2>P21 · Analisis de laboratorio</h2><p className="inline-note">Humedad, residuo, hierro, densidad, fluidez y resistencias se muestran solo si ADMIN los configuro para el punto. La torre exige exactamente los tamices configurados.</p><form onSubmit={saveAnalysis}><label>Punto de muestreo<select value={pointId} onChange={(event) => { setPointId(event.target.value); setValues({}); setSieveValues({}); }} disabled={!points.length} required><option value="">Seleccione un punto</option>{points.map((point) => <option key={point.id} value={point.id}>{point.codigo} · {point.descripcion}</option>)}</select></label><label>Turno<input value={shift} onChange={(event) => setShift(event.target.value)} required /></label>{selected.filter((item) => item.determinacion.tipo_resultado === "NUMERICO").map((item) => <label key={item.id}>{item.determinacion.descripcion} ({item.unidad.codigo})<input inputMode="decimal" value={values[item.id] ?? ""} onChange={(event) => setValues({ ...values, [item.id]: event.target.value })} /></label>)}{selected.filter((item) => item.determinacion.tipo_resultado === "GRANULOMETRIA").map((item) => <fieldset className="thickness" key={item.id}><legend>{item.determinacion.descripcion} · {item.tamices[0]?.torre ?? "torre sin configurar"}</legend>{item.tamices.map((mesh) => <label key={mesh.id}>{mesh.codigo} · {mesh.descripcion}<input inputMode="decimal" value={sieveValues[`${item.id}:${mesh.id}`] ?? ""} onChange={(event) => setSieveValues({ ...sieveValues, [`${item.id}:${mesh.id}`]: event.target.value })} /></label>)}</fieldset>)}<fieldset className="thickness"><legend>Vinculos de trazabilidad opcionales</legend><label>MUA<input value={mua} onChange={(event) => setMua(event.target.value)} placeholder="UUID MUA" /></label><label>Registro de stock M3<input value={stock} onChange={(event) => setStock(event.target.value)} placeholder="UUID registro" /></label><label>Registro de proceso<input value={processRecord} onChange={(event) => setProcessRecord(event.target.value)} placeholder="UUID registro" /></label><label>Silo<input type="number" min="1" max="16" value={silo} onChange={(event) => setSilo(event.target.value)} /></label><label>Producto<input value={product} onChange={(event) => setProduct(event.target.value)} placeholder="UUID catalogo producto" /></label></fieldset><button disabled={!pointId || !!configurationMessage}>Guardar analisis configurado</button></form></section><section className="dashboard"><h2>P22 · Agenda y cumplimiento</h2>{agenda ? <><p>{agenda.cumplimiento.realizados}/{agenda.cumplimiento.esperados} controles realizados{agenda.cumplimiento.porcentaje !== null ? ` (${agenda.cumplimiento.porcentaje}%)` : ""}.</p>{agenda.mensaje_configuracion && <p className="warning">{agenda.mensaje_configuracion}</p>}<div className="agenda">{agenda.agenda.map((item) => <article key={`${item.id_configuracion}:${item.esperado_en}`}><strong>{item.cumplido ? "Cumplido" : "Pendiente"}</strong><span>{new Date(item.esperado_en).toLocaleString()}</span></article>)}</div></> : <p className="inline-note">Consulte la agenda para ver los controles esperados por frecuencia configurada. Las ausencias reducen cumplimiento; no crean analisis ni desvios ficticios.</p>}</section><section className="offline"><h2>Cola offline</h2><p>{pending.length ? pending.map((item) => `${item.module}: ${item.status}`).join(" · ") : "Sin pendientes."}</p></section></section>}<p className="message">{message}</p></section></main>;
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");

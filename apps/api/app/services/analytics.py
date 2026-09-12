@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LimitVersion, MaintenanceCorrelation, MaintenanceRecord, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
+from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LaboratoryAnalysis, LaboratoryAnalysisResult, LaboratoryDeviationEvent, LaboratoryPointDetermination, LaboratorySamplePoint, LaboratoryUnit, LimitVersion, MaintenanceCorrelation, MaintenanceRecord, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
 
 MEASUREMENTS = {"M1": {"humedad_verdes": "%", "residuo": "%", "aeroseparador": "%"}, "M2": {"humedad_salida": "%", "dosificacion_calc": "L/t"}, "M3": {"humedad": "%", "temperatura": "C", "humedad_ksider": "%", "toneladas_calculadas": "t"}, "M9": {"humedad_pasta": "%", "presion": "kg/cm2", "humedad_residual": "%"}}
 
@@ -80,6 +80,37 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
             db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.inicio, tabla_origen="registro_mantenimiento", id_registro_origen=record.id, metrica="duracion_mantenimiento_horas", valor=Decimal(str(duration)), unidad="h", origen_dato="digital_directo", contexto={"modulo": "M7", "sector": "Mantenimiento", "equipo_id": str(record.id_equipo), "tipo": record.tipo, "madirex_informativo": bool(record.campos_madirex)}))
         for correlation in correlations_by_record[record.id]:
             bucket["maintenance_correlations"][correlation.tipo_referencia] += 1
+    lab_results = defaultdict(list)
+    for analysis in db.scalars(select(LaboratoryAnalysis).where(LaboratoryAnalysis.estado != "ANULADO").order_by(LaboratoryAnalysis.instante_muestreo)):
+        point = db.get(LaboratorySamplePoint, analysis.id_punto)
+        if point is None:
+            continue
+        key = (analysis.fecha_operativa, analysis.turno_codigo, "LABORATORIO", point.sector)
+        bucket = buckets[key]
+        bucket["values"]["analisis_laboratorio"].append(1.0)
+        for result in db.scalars(select(LaboratoryAnalysisResult).where(LaboratoryAnalysisResult.id_analisis == analysis.id)):
+            configuration = db.get(LaboratoryPointDetermination, result.id_configuracion)
+            if configuration is None:
+                continue
+            unit = db.get(LaboratoryUnit, configuration.id_unidad)
+            metric = f"laboratorio:{configuration.id_determinacion}"
+            value = number(result.valor)
+            if value is not None:
+                lab_results[analysis.id].append(result.id)
+                bucket["values"]["resultados_laboratorio"].append(1.0)
+                bucket["values"][metric].append(float(value))
+                applied = db.scalar(select(AppliedLimit).where(AppliedLimit.tabla_origen == "analisis_laboratorio_resultado", AppliedLimit.id_registro == result.id))
+                version = db.get(LimitVersion, applied.id_limite_version) if applied else None
+                context = {"modulo": "M17", "sector": point.sector, "punto_muestreo": point.codigo, "id_configuracion": str(configuration.id)}
+                if version:
+                    context["banda_limite"] = {"min": float(version.valor_min) if version.valor_min is not None else None, "max": float(version.valor_max) if version.valor_max is not None else None, "resultado": applied.resultado}
+                db.add(TemporalMeasurementFact(fecha_operativa=analysis.fecha_operativa, turno_codigo=analysis.turno_codigo, instante_operativo=analysis.instante_muestreo, tabla_origen="analisis_laboratorio", id_registro_origen=analysis.id, metrica=metric, valor=value, unidad=unit.codigo if unit else None, origen_dato="digital_directo", contexto=context))
+    for event in db.scalars(select(LaboratoryDeviationEvent)):
+        result = db.get(LaboratoryAnalysisResult, event.id_resultado)
+        analysis = db.get(LaboratoryAnalysis, result.id_analisis) if result else None
+        point = db.get(LaboratorySamplePoint, analysis.id_punto) if analysis else None
+        if analysis and point and analysis.estado != "ANULADO":
+            buckets[(analysis.fecha_operativa, analysis.turno_codigo, "LABORATORIO", point.sector)]["deviations"][event.estado] += 1
     for event in db.scalars(select(DeviationEvent)):
         record = db.get(OperationalRecord, event.id_registro)
         if record and record.estado != "ANULADO":
@@ -95,7 +126,7 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
                 union += (end - start).total_seconds() / 3600; last = [start, end]
             elif end > last[1]:
                 union += (end - last[1]).total_seconds() / 3600; last[1] = end
-        metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor", "intervenciones_mantenimiento", "horas_mantenimiento"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
+        metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor", "intervenciones_mantenimiento", "horas_mantenimiento", "analisis_laboratorio", "resultados_laboratorio"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
         metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"]), "mantenimiento_por_tipo": dict(bucket["maintenance_types"]), "correlaciones_mantenimiento": dict(bucket["maintenance_correlations"])})
         db.add(ShiftFact(fecha_operativa=key[0], turno_codigo=key[1], linea_clave=key[2], contexto_clave=key[3], metricas=metrics))
     run.estado, run.completado_en = "COMPLETADO", datetime.now(timezone.utc)

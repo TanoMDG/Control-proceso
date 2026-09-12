@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3, F4, F5 y la infraestructura preparatoria F6 estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3, F4, F5, la infraestructura preparatoria F6 y F7 M17 Laboratorio estan disponibles.
 
 ## Requisitos
 
@@ -78,6 +78,16 @@ ADMIN configura explicitamente una fuente y sus tags en `/plc/configuracion`. Ca
 SUPERVISION/ADMIN consulta `/api/v1/plc/estado`. El recalculo de KPI preserva los hechos de origen PLC; F6 no programa adquisicion, no conecta a un PLC y no debe habilitarse para operacion hasta una fase posterior aprobada.
 
 F6 software implementado. Puesta en marcha PLC pendiente de datos reales de planta y prueba de lectura autorizada.
+
+## Laboratorio (F7 M17)
+
+P21 registra analisis de laboratorio mediante `POST /api/v1/laboratorio/analisis`; P22 consulta agenda y cumplimiento mediante `GET /api/v1/laboratorio/agenda`. ADMIN configura, sin datos industriales precargados, las unidades, puntos de muestreo, determinaciones numericas o granulometricas, limites existentes, frecuencias versionadas y tamices por torre. Las determinaciones como humedad, residuo, hierro, densidad, fluidez y resistencias solo aparecen cuando esa configuracion existe.
+
+Cada analisis conserva los vinculos opcionales declarados a MUA, registro de stock M3, proceso, silo y producto. Los resultados numericos conservan la version de limite aplicada y crean un desvio solo si la regla/plan de reaccion configurado lo indica. La granulometria exige exactamente los tamices configurados para esa determinacion y punto; no hay mallas implicitas.
+
+`Pendiente de configuracion: faltan puntos, determinaciones, unidades o frecuencias de laboratorio.`
+
+La agenda genera exclusivamente las ocurrencias de las frecuencias configuradas. Una medicion faltante baja cumplimiento y nunca crea un analisis, limite o desvio ficticio. CARGA solo puede operar el sector `Laboratorio` y consultar sus ultimos siete dias; SUPERVISION/ADMIN disponen de historial. P21 se encola offline con su `client_uuid` original.
 
 ## Pruebas
 
