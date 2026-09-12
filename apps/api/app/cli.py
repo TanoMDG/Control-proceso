@@ -4,6 +4,7 @@ from pathlib import Path
 from app.db.session import SessionLocal
 from app.services.bootstrap import bootstrap_admin
 from app.services.importer import ensure_development_import_admin, import_master_data, validate_excel_source
+from app.services.analytics import rebuild_analytics
 
 
 def main() -> None:
@@ -20,11 +21,16 @@ def main() -> None:
     apply_import = commands.add_parser("import-apply-development", help="Importa datos maestros en desarrollo con la cuenta ADMIN técnica autorizada")
     apply_import.add_argument("archivo", type=Path)
     apply_import.add_argument("--password", required=True)
+    commands.add_parser("recalculate-analytics", help="Reconstruye los hechos analiticos desde registros operativos")
     args = parser.parse_args()
     if args.command == "import-preview":
         print(validate_excel_source(args.archivo))
         return
     with SessionLocal.begin() as db:
+        if args.command == "recalculate-analytics":
+            run = rebuild_analytics(db)
+            print(f"Recalculo completado: {run.id}")
+            return
         if args.command == "import-apply-development":
             actor = ensure_development_import_admin(db, password=args.password)
             print(import_master_data(db, path=args.archivo, actor=actor))

@@ -15,3 +15,6 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .forms { display: grid; gap: 12px; }
 .forms h2 { margin: 0; }
 .forms p { color: #bdd1d6; line-height: 1.4; }
+.dashboard { border-top: 1px solid #4f7780; margin-top: 8px; padding-top: 12px; }
+.dashboard article { background: #102b35; border-radius: 6px; margin-top: 8px; padding: 10px; }
+.dashboard pre { overflow: auto; white-space: pre-wrap; color: #c7dce0; }

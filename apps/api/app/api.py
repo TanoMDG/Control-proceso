@@ -11,11 +11,12 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftReceipt, SyncConflict, SystemParameterVersion, User
-from app.schemas import (AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AnalyticsRun, AuditLog, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, Limit, LimitVersion, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SyncConflict, SystemParameterVersion, User
+from app.schemas import (AnalyticsRebuildOutput, AuditOutput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LoginInput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SyncConflictOutput, SyncConflictResolution, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
+from app.services.analytics import rebuild_analytics
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
@@ -81,7 +82,7 @@ def assert_record_access(db: Session, actor: User, sector: str, *, write: bool =
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F0"}
+    return {"status": "ok", "phase": "F2"}
 
 
 @router.get("/exportar", response_class=HTMLResponse)
@@ -250,6 +251,37 @@ def receive_shift(fecha_operativa: date, turno_codigo: str, sector: str, payload
     db.add(receipt); db.flush()
     write_audit(db, user_id=actor.id, table="recepcion_turno", record_id=str(receipt.id), action="RECEPCION", after=audit_payload(receipt), reason=payload.observacion)
     db.commit(); return {"id": str(receipt.id)}
+
+
+@router.post("/analitica/recalcular", response_model=AnalyticsRebuildOutput)
+def recalculate_analytics(actor: User = Depends(require_supervision), db: Session = Depends(get_db)):
+    run = rebuild_analytics(db)
+    write_audit(db, user_id=actor.id, table="recalculo_analitico", record_id=str(run.id), action="RECALCULO", after=audit_payload(run))
+    db.commit(); db.refresh(run); return run
+
+
+@router.get("/kpi")
+def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    role = get_role(db, actor).nombre
+    if role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
+    statement = select(ShiftFact)
+    if role == "CARGA": statement = statement.where(ShiftFact.contexto_clave == actor.sector, ShiftFact.fecha_operativa >= date.today() - timedelta(days=6))
+    if desde: statement = statement.where(ShiftFact.fecha_operativa >= desde)
+    if hasta: statement = statement.where(ShiftFact.fecha_operativa <= hasta)
+    if turno: statement = statement.where(ShiftFact.turno_codigo == turno)
+    if contexto: statement = statement.where(ShiftFact.contexto_clave == contexto)
+    facts = list(db.scalars(statement.order_by(ShiftFact.fecha_operativa, ShiftFact.turno_codigo)))
+    last = db.scalar(select(AnalyticsRun).where(AnalyticsRun.estado == "COMPLETADO").order_by(AnalyticsRun.completado_en.desc()))
+    return {"ultimo_recalculo": last.completado_en if last else None, "hechos": [{"fecha_operativa": row.fecha_operativa, "turno": row.turno_codigo, "contexto": row.contexto_clave, "metricas": row.metricas} for row in facts]}
+
+
+@router.get("/kpi/pareto-paradas")
+def stoppage_pareto(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    payload = get_kpi(actor=actor, db=db)
+    totals: dict[str, float] = {}
+    for fact in payload["hechos"]:
+        for stop in fact["metricas"].get("paradas", []): totals[stop["causa"]] = totals.get(stop["causa"], 0) + stop["duracion_horas"]
+    return {"ultimo_recalculo": payload["ultimo_recalculo"], "pareto": [{"causa": cause, "duracion_horas": duration} for cause, duration in sorted(totals.items(), key=lambda row: row[1], reverse=True)]}
 
 
 @router.post("/auth/login", response_model=TokenOutput)
