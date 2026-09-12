@@ -18,7 +18,9 @@ def number(value):
 def rebuild_analytics(db: Session) -> AnalyticsRun:
     run = AnalyticsRun(estado="EN_PROCESO", alcance={"origen": "registro_operativo"})
     db.add(run); db.flush()
-    db.execute(delete(TemporalMeasurementFact)); db.execute(delete(ShiftFact))
+    # PLC facts are acquired independently and must survive an operational KPI rebuild.
+    db.execute(delete(TemporalMeasurementFact).where(TemporalMeasurementFact.tabla_origen.in_(("registro_operativo", "registro_mantenimiento"))))
+    db.execute(delete(ShiftFact))
     records = list(db.scalars(select(OperationalRecord).where(OperationalRecord.estado != "ANULADO").order_by(OperationalRecord.instante_medicion)))
     applied = {(row.id_registro, row.campo): row for row in db.scalars(select(AppliedLimit).where(AppliedLimit.tabla_origen == "registro_operativo"))}
     buckets = defaultdict(lambda: {"values": defaultdict(list), "stops": [], "deviations": defaultdict(int), "maintenance_types": defaultdict(int), "maintenance_correlations": defaultdict(int)})

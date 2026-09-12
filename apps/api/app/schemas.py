@@ -480,3 +480,86 @@ class AnalyticsRebuildOutput(ORMModel):
     estado: str
     solicitado_en: datetime
     completado_en: datetime | None
+
+
+class PlcReadSourceInput(BaseModel):
+    nombre: str = Field(min_length=1, max_length=120)
+    adaptador: str = Field(pattern="^TEST_SIMULATOR$")
+    activo: bool
+
+
+class PlcReadSourcePatch(BaseModel):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    activo: bool | None = None
+
+
+class PlcReadSourceOutput(ORMModel):
+    id: UUID
+    nombre: str
+    adaptador: str
+    activo: bool
+
+
+class PlcReadTagInput(BaseModel):
+    metrica: str = Field(min_length=1, max_length=100)
+    referencia_tag: str = Field(min_length=1, max_length=200)
+    unidad: str = Field(min_length=1, max_length=20)
+    escala_factor: Decimal
+    escala_offset: Decimal
+    muestreo_segundos: int = Field(gt=0)
+    agregacion_segundos: int = Field(gt=0)
+    retencion_crudo_dias: int = Field(gt=0)
+    retencion_agregado_dias: int = Field(gt=0)
+    turno_codigo: str = Field(min_length=1, max_length=30)
+    sector: str = Field(min_length=1, max_length=40)
+    valor_simulado_crudo: Decimal | None = None
+    calidad_simulada: str | None = Field(default=None, pattern="^(GOOD|UNCERTAIN|BAD)$")
+    activo: bool
+
+
+class PlcReadTagPatch(BaseModel):
+    metrica: str | None = Field(default=None, min_length=1, max_length=100)
+    referencia_tag: str | None = Field(default=None, min_length=1, max_length=200)
+    unidad: str | None = Field(default=None, min_length=1, max_length=20)
+    escala_factor: Decimal | None = None
+    escala_offset: Decimal | None = None
+    muestreo_segundos: int | None = Field(default=None, gt=0)
+    agregacion_segundos: int | None = Field(default=None, gt=0)
+    retencion_crudo_dias: int | None = Field(default=None, gt=0)
+    retencion_agregado_dias: int | None = Field(default=None, gt=0)
+    turno_codigo: str | None = Field(default=None, min_length=1, max_length=30)
+    sector: str | None = Field(default=None, min_length=1, max_length=40)
+    valor_simulado_crudo: Decimal | None = None
+    calidad_simulada: str | None = Field(default=None, pattern="^(GOOD|UNCERTAIN|BAD)$")
+    activo: bool | None = None
+
+
+class PlcReadTagOutput(ORMModel):
+    id: UUID
+    id_fuente: UUID
+    metrica: str
+    referencia_tag: str
+    unidad: str
+    escala_factor: Decimal
+    escala_offset: Decimal
+    muestreo_segundos: int
+    agregacion_segundos: int
+    retencion_crudo_dias: int
+    retencion_agregado_dias: int
+    turno_codigo: str
+    sector: str
+    valor_simulado_crudo: Decimal | None
+    calidad_simulada: str | None
+    activo: bool
+
+
+class PlcAcquisitionStatusOutput(BaseModel):
+    id_fuente: UUID
+    fuente: str
+    adaptador: str
+    fuente_activa: bool
+    tags_activos: int
+    estado: str
+    ultimo_intento_en: datetime | None
+    ultima_muestra_en: datetime | None
+    ultimo_error: str | None
