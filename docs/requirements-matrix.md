@@ -21,7 +21,7 @@ F8 and F9 remain out of scope and unimplemented. Any matrix row marked `PENDING 
 
 ## UI Acceptance Gate
 
-Until its corresponding operator, supervision, administration, or remote UI flow is implemented and exercised end-to-end, every CP that requires user interaction is `PENDING ACCEPTANCE` for the v1.0.0 release gate, regardless of the backend implementation label retained below as historical phase evidence. CP50 remains implemented only as its tested negative architectural rule. The current web client exposes M17 only, so this gate currently leaves all other UI-dependent CP pending.
+The web client presents role- and sector-aware operational, laboratory, traceability, maintenance, supervision, administration, and remote-KPI navigation. Playwright covers the role-boundary flows; each CP remains `PENDING ACCEPTANCE` until its specific end-to-end acceptance scenario is exercised. CP50 remains implemented only as its tested negative architectural rule. F8 and F9 remain out of scope.
 
 ## CP01-CP35
 
