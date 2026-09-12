@@ -95,6 +95,8 @@ The status is a roadmap classification from section 11, not evidence that an acc
 
 ## Phase Check
 
+F6 software implementado. Puesta en marcha PLC pendiente de datos reales de planta y prueba de lectura autorizada.
+
 F0 coverage is limited to the foundational requirements identified in section 11. A later operational acceptance case with an implemented F0 dependency is marked `STRUCTURALLY COVERED (F0); acceptance PLANNED (Fx)`; it is never presented as an executed later-phase acceptance test. F9 has no CP01-CP70 acceptance case in section 14.
 
 ## F5 M7 Delivery Matrix

@@ -77,6 +77,8 @@ ADMIN configura explicitamente una fuente y sus tags en `/plc/configuracion`. Ca
 
 SUPERVISION/ADMIN consulta `/api/v1/plc/estado`. El recalculo de KPI preserva los hechos de origen PLC; F6 no programa adquisicion, no conecta a un PLC y no debe habilitarse para operacion hasta una fase posterior aprobada.
 
+F6 software implementado. Puesta en marcha PLC pendiente de datos reales de planta y prueba de lectura autorizada.
+
 ## Pruebas
 
 ```sh
