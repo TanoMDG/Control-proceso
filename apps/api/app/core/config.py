@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 480
     internal_networks: str = "127.0.0.1/32,::1/128"
+    cors_origins: str = "http://localhost:5173"
 
 
 @lru_cache

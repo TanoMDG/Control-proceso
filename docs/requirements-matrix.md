@@ -15,13 +15,17 @@ The status is a roadmap classification from section 11, not evidence that an acc
 
 ## Stabilization Audit (2026-09-12)
 
-This audit is deliberately limited to the release risks remediated in `0010_stabilization`; it is not a blanket re-certification of CP01-CP70. The executable evidence is `test_f1_operations.py` (CP38, CP39, CP43, CP65, CP67), `test_f4_traceability.py` (CP09-CP11), `test_f0_integration.py` (CP23), and `apps/web/src/offline.test.ts` (CP25). The migration path was also run from an actual `v0.1.0-f0` schema through `0010_stabilization`.
+This audit is deliberately limited to the release risks remediated in `0010_stabilization`; it is not a blanket re-certification of CP01-CP70. API evidence remains `test_f1_operations.py` (CP38, CP39, CP43, CP65, CP67), `test_f4_traceability.py` (CP09-CP11), and `test_f0_integration.py` (CP23). The migration path was also run from an actual `v0.1.0-f0` schema through `0010_stabilization`.
 
 F8 and F9 remain out of scope and unimplemented. Any matrix row marked `PENDING ACCEPTANCE` or `PLANNED` must not be presented as accepted behavior.
 
 ## UI Acceptance Gate
 
-The web client presents role- and sector-aware operational, laboratory, traceability, maintenance, supervision, administration, and remote-KPI navigation. Playwright covers the role-boundary flows; each CP remains `PENDING ACCEPTANCE` until its specific end-to-end acceptance scenario is exercised. CP50 remains implemented only as its tested negative architectural rule. F8 and F9 remain out of scope.
+`apps/web/e2e/roles.spec.ts` runs against the `e2e` Docker Compose profile: a disposable PostgreSQL database, migrated API, built frontend, and synthetic `e2e-*` users. It does not route, fulfill, or intercept any API request, and it logs in through `POST /auth/login` with real password hashes and signed tokens.
+
+The browser evidence currently demonstrates successful persisted entry flows for M1, M2, M3 (lecho), M4, M5, M6, M7, M8, M9, M10, and M17; CARGA/SUPERVISION/ADMIN/remote navigation boundaries; IndexedDB persistence across reload, reconnect, and duplicate retry by the same `client_uuid`; a server-persisted stale-revision conflict; and offline shell recovery through the registered service worker. The synthetic fixture deliberately contains only the masters needed for those flows and is rejected unless `APP_ENV=test`.
+
+This is not full CP acceptance evidence. In particular, the current UI does not expose deviation treatment/verification/closure, limit/version administration, full correction reasons and lifecycle work queues, trace graph review, PLC configuration/acquisition, or the broader KPI/manual-calculation scenarios. The browser module scenarios therefore prove transport, authorization, form-to-API mapping, and persisted success only; they do not independently prove every industrial rule named in the corresponding CP row. CP25 and CP43 have direct browser evidence for their offline/idempotency and conflict portions, respectively. All other CP rows retain their roadmap/API-test classification below. CP50 remains implemented only as its tested negative architectural rule. F8 and F9 remain out of scope.
 
 ## CP01-CP35
 

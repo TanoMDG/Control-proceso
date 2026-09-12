@@ -882,6 +882,19 @@ def list_mua(actor: User = Depends(current_user), db: Session = Depends(get_db))
     return [{"id": mua.id, "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": mua.id_preparador, "composicion": mua.composicion, "creado_por": mua.creado_por, "presencias_activas": [{"id": presence.id, "id_mua": presence.id_mua, "box": presence.box, "desde": presence.desde, "hasta": presence.hasta, "certeza": presence.certeza, "id_usuario_inicio": presence.id_usuario_inicio, "id_usuario_fin": presence.id_usuario_fin} for presence in active if presence.id_mua == mua.id], "orden_fifo": min((box_rows.index(presence) + 1 for box_rows in fifo_by_box.values() for presence in box_rows if presence.id_mua == mua.id), default=None)} for mua in rows]
 
 
+@router.get("/trazabilidad/preparadores")
+def list_mua_preparers(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor, create_mua=True)
+    on_date = date.today()
+    statement = select(Person).join(PersonPosition, PersonPosition.id_persona == Person.id).where(
+        Person.activo.is_(True),
+        func.lower(PersonPosition.puesto) == "palero",
+        PersonPosition.vigente_desde <= on_date,
+        or_(PersonPosition.vigente_hasta.is_(None), PersonPosition.vigente_hasta > on_date),
+    ).order_by(Person.apellido_nombre)
+    return [{"id": str(person.id), "apellido_nombre": person.apellido_nombre} for person in db.scalars(statement).unique()]
+
+
 @router.post("/trazabilidad/mua-box", response_model=MuaBoxPeriodOutput, status_code=201)
 def start_mua_box(payload: MuaBoxStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     assert_traceability_access(db, actor, requires_palero=True, on_date=payload.desde.date())

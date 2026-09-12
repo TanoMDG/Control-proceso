@@ -16,7 +16,9 @@ def upgrade() -> None:
     tables = set(inspector.get_table_names())
 
     def create_table_if_missing(name: str, *args: object) -> None:
-        if name not in tables:
+        # Earlier revisions may have created current-model tables; avoid relying
+        # on the inspector snapshot while this migration is in progress.
+        if not sa.inspect(bind).has_table(name):
             op.create_table(name, *args)
 
     if "sector" not in columns:

@@ -95,6 +95,17 @@ La agenda genera exclusivamente las ocurrencias de las frecuencias configuradas.
 docker compose --profile test run --rm tests
 ```
 
+## E2E Con Datos Sinteticos
+
+Los E2E no interceptan rutas de negocio ni fabrican tokens. Levantan PostgreSQL, API y frontend reales en el perfil aislado `e2e`; la semilla `app.e2e_seed` solo se permite con `APP_ENV=test`, vacia exclusivamente la base de prueba y crea cuentas y maestros sinteticos `e2e-*`.
+
+```sh
+docker compose --profile e2e rm -sf e2e_seed api_e2e web_e2e
+docker compose --profile e2e run --build --rm e2e_tests
+```
+
+El primer comando fuerza la ejecucion de la semilla en cada corrida sin tocar `db`, sus credenciales ni datos productivos. El perfil publica temporalmente API en `8001` y frontend en `5174`; el ejecutor Playwright consume los servicios por la red Compose.
+
 ## Validar El Excel Fuente
 
 ```sh
