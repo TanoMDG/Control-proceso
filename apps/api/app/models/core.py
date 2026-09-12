@@ -467,6 +467,7 @@ class OperationalRecord(Base, Timestamped):
     __table_args__ = (
         UniqueConstraint("modulo", "client_uuid", name="uq_registro_operativo_cliente"),
         CheckConstraint("estado IN ('BORRADOR', 'CERRADO', 'VALIDADO', 'ANULADO')", name="ck_registro_operativo_estado"),
+        CheckConstraint("estado <> 'ANULADO' OR motivo_anulacion IS NOT NULL", name="ck_registro_operativo_anulacion_motivo"),
         CheckConstraint("origen_dato IN ('digital_directo', 'papel_digitado')", name="ck_registro_operativo_origen"),
         CheckConstraint("revision > 0", name="ck_registro_operativo_revision"),
         Index("ix_registro_operativo_consulta", "modulo", "fecha_operativa", "turno_codigo"),

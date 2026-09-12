@@ -84,6 +84,14 @@ def assert_record_access(db: Session, actor: User, sector: str, *, write: bool =
         raise HTTPException(status_code=403, detail="CARGA solo escribe su sector")
 
 
+def assert_carga_history_scope(db: Session, actor: User, desde: date | None, hasta: date | None) -> None:
+    if get_role(db, actor).nombre != "CARGA":
+        return
+    lower, today = date.today() - timedelta(days=6), date.today()
+    if (desde and not lower <= desde <= today) or (hasta and not lower <= hasta <= today):
+        raise HTTPException(status_code=403, detail="CARGA solo consulta el turno actual y los ultimos siete dias")
+
+
 def is_effective_palero(db: Session, person_id: UUID, on_date: date) -> bool:
     return db.scalar(
         select(PersonPosition.id).where(
@@ -290,9 +298,8 @@ def list_laboratory_analyses(desde: date | None = None, hasta: date | None = Non
     statement = select(LaboratoryAnalysis)
     if role == "CARGA":
         lower = date.today() - timedelta(days=6)
-        if desde and desde < lower:
-            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
-        statement = statement.where(LaboratoryAnalysis.fecha_operativa >= lower)
+        assert_carga_history_scope(db, actor, desde, hasta)
+        statement = statement.where(LaboratoryAnalysis.fecha_operativa.between(lower, date.today()))
     if desde: statement = statement.where(LaboratoryAnalysis.fecha_operativa >= desde)
     if hasta: statement = statement.where(LaboratoryAnalysis.fecha_operativa <= hasta)
     return [analysis_output(db, row) for row in db.scalars(statement.order_by(LaboratoryAnalysis.instante_muestreo.desc()))]
@@ -331,6 +338,7 @@ def close_laboratory_analysis(analysis_id: UUID, payload: LaboratoryActionInput,
 @router.get("/laboratorio/agenda")
 def get_laboratory_agenda(desde: datetime, hasta: datetime, id_punto: UUID | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     assert_laboratory_access(db, actor)
+    assert_carga_history_scope(db, actor, desde.date(), hasta.date())
     return laboratory_agenda(db, desde, hasta, id_punto)
 
 
@@ -548,9 +556,8 @@ def list_records(modulo: str, desde: date | None = None, hasta: date | None = No
     statement = select(OperationalRecord).where(OperationalRecord.modulo == module)
     if role == "CARGA":
         lower = date.today() - timedelta(days=6)
-        if desde and desde < lower:
-            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
-        statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa >= lower)
+        assert_carga_history_scope(db, actor, desde, hasta)
+        statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa.between(lower, date.today()))
     if desde: statement = statement.where(OperationalRecord.fecha_operativa >= desde)
     if hasta: statement = statement.where(OperationalRecord.fecha_operativa <= hasta)
     return list(db.scalars(statement.order_by(OperationalRecord.instante_medicion.desc())))
@@ -567,6 +574,8 @@ def correct_record(modulo: str, record_id: UUID, payload: RecordUpdateInput, act
         db.commit()
         raise HTTPException(status_code=409, detail="Revision desactualizada; conflicto creado")
     if role == "CARGA" and (record.estado != "BORRADOR" or record.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores")
+    if record.estado == "ANULADO":
+        raise HTTPException(status_code=422, detail="Un registro anulado no puede corregirse")
     if record.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
     before = audit_payload(record)
     previous_burner = record.datos.get("temperatura_quemador")

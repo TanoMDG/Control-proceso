@@ -407,6 +407,8 @@ class MaintenanceProductFormatVersionOutput(ORMModel):
 
 
 class MaintenanceRecordInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     client_uuid: UUID = Field(default_factory=uuid4)
     fecha_operativa: date
     turno_codigo: str = Field(min_length=1, max_length=30)
