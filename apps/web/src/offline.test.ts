@@ -9,4 +9,8 @@ describe("offline queue contract", () => {
   it("surfaces failed online synchronization", () => {
     expect(makePending("id", "m2", {}, true, "422").status).toBe("error");
   });
+  it("keeps an M10 grid payload idempotent while offline", () => {
+    const payload = { client_uuid: "m10-device-uuid", datos: { linea: "L7", detalles: [{ prensa: "PH5000-1", cavidad: 1, sector: 1, espesor_mm: "7.10" }] } };
+    expect(makePending("m10-device-uuid", "m10", payload, false).payload).toEqual(payload);
+  });
 });

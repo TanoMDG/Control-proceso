@@ -53,7 +53,7 @@ def expected_operational_date(turno_codigo: str, instante_medicion: datetime) ->
 def printable_form(modulo: str) -> str:
     labels = {
         "m1": "M1 Molienda", "m2": "M2 Madirex", "m3": "M3 Lecho fluido / K-Sider / Silos",
-        "m6": "M6 Paradas", "m10": "M10 Espesores",
+        "m6": "M6 Paradas", "m8": "M8 Vaciado de tolva", "m9": "M9 Prensado", "m10": "M10 Espesores",
     }
     title = labels.get(modulo.lower())
     if title is None:
@@ -82,7 +82,7 @@ def assert_record_access(db: Session, actor: User, sector: str, *, write: bool =
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F2"}
+    return {"status": "ok", "phase": "F3"}
 
 
 @router.get("/exportar", response_class=HTMLResponse)
