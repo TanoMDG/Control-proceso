@@ -12,7 +12,13 @@ depends_on = None
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
-    op.create_table(
+    tables = set(sa.inspect(op.get_bind()).get_table_names())
+
+    def create_table_if_missing(name: str, *args: object) -> None:
+        if name not in tables:
+            op.create_table(name, *args)
+
+    create_table_if_missing(
         "plc_lectura_fuente",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("nombre", sa.String(120), unique=True, nullable=False),
@@ -22,7 +28,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("adaptador = 'TEST_SIMULATOR'", name="ck_plc_fuente_adaptador_test"),
     )
-    op.create_table(
+    create_table_if_missing(
         "plc_lectura_tag",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_fuente", uuid, sa.ForeignKey("plc_lectura_fuente.id", ondelete="RESTRICT"), nullable=False),
@@ -47,7 +53,7 @@ def upgrade() -> None:
         sa.CheckConstraint("retencion_crudo_dias > 0 AND retencion_agregado_dias > 0", name="ck_plc_tag_retencion"),
         sa.CheckConstraint("calidad_simulada IS NULL OR calidad_simulada IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_tag_calidad_simulada"),
     )
-    op.create_table(
+    create_table_if_missing(
         "plc_lectura_cruda",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_tag", uuid, sa.ForeignKey("plc_lectura_tag.id", ondelete="RESTRICT"), nullable=False),
@@ -60,8 +66,9 @@ def upgrade() -> None:
         sa.Column("adaptador", sa.String(30), nullable=False),
         sa.CheckConstraint("calidad IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_lectura_cruda_calidad"),
     )
-    op.create_index("ix_plc_lectura_cruda_tag_instante", "plc_lectura_cruda", ["id_tag", "instante_fuente"])
-    op.create_table(
+    if "plc_lectura_cruda" not in tables:
+        op.create_index("ix_plc_lectura_cruda_tag_instante", "plc_lectura_cruda", ["id_tag", "instante_fuente"])
+    create_table_if_missing(
         "plc_lectura_agregada",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_tag", uuid, sa.ForeignKey("plc_lectura_tag.id", ondelete="RESTRICT"), nullable=False),
@@ -79,8 +86,9 @@ def upgrade() -> None:
         sa.CheckConstraint("cantidad_muestras > 0", name="ck_plc_agregado_muestras"),
         sa.CheckConstraint("calidad IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_agregado_calidad"),
     )
-    op.create_index("ix_plc_lectura_agregada_tag_desde", "plc_lectura_agregada", ["id_tag", "desde"])
-    op.create_table(
+    if "plc_lectura_agregada" not in tables:
+        op.create_index("ix_plc_lectura_agregada_tag_desde", "plc_lectura_agregada", ["id_tag", "desde"])
+    create_table_if_missing(
         "plc_estado_adquisicion",
         sa.Column("id_fuente", uuid, sa.ForeignKey("plc_lectura_fuente.id", ondelete="CASCADE"), primary_key=True),
         sa.Column("estado", sa.String(30), nullable=False),

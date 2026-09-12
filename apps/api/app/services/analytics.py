@@ -127,7 +127,8 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
             elif end > last[1]:
                 union += (end - last[1]).total_seconds() / 3600; last[1] = end
         metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor", "intervenciones_mantenimiento", "horas_mantenimiento", "analisis_laboratorio", "resultados_laboratorio"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
-        metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"]), "mantenimiento_por_tipo": dict(bucket["maintenance_types"]), "correlaciones_mantenimiento": dict(bucket["maintenance_correlations"])})
+        deviations_by_state = dict(bucket["deviations"])
+        metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": deviations_by_state, "desvios_reales": sum(count for state, count in deviations_by_state.items() if state != "INVALIDADO"), "mantenimiento_por_tipo": dict(bucket["maintenance_types"]), "correlaciones_mantenimiento": dict(bucket["maintenance_correlations"])})
         db.add(ShiftFact(fecha_operativa=key[0], turno_codigo=key[1], linea_clave=key[2], contexto_clave=key[3], metricas=metrics))
     run.estado, run.completado_en = "COMPLETADO", datetime.now(timezone.utc)
     return run

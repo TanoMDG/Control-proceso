@@ -16,7 +16,17 @@ Las migraciones no contienen datos maestros productivos. El primer ADMIN se crea
 
 ## Offline y analitica
 
-`revision_sincronizacion` y `conflicto_sincronizacion` preservan las revisiones de cliente y servidor. Las tablas `hecho_medicion_temporal` y `hecho_turno` son proyecciones reconstruibles y no fuentes de verdad. F0 no calcula KPI ni incorpora registros operativos.
+`revision_sincronizacion` y `conflicto_sincronizacion` preservan las revisiones de cliente y servidor. Las operaciones aceptadas y los cambios de estado incrementan su revision; una reintento obsoleto conserva ambas versiones en un unico conflicto abierto y nunca sobreescribe el registro. La cola PWA usa IndexedDB, conserva `client_uuid`, metodo y ruta original, y no reintenta conflictos ni errores de validacion.
+
+La PWA registra `/sw.js` en produccion. El worker cachea solo el shell estatico y nunca respuestas `/api/`, que siguen siendo fuente de verdad del backend. Las tablas `hecho_medicion_temporal` y `hecho_turno` son proyecciones reconstruibles y no fuentes de verdad.
+
+## Autorizacion
+
+Toda ruta de API se autoriza en backend contra `permiso(modulo, accion, alcance)`, y el alcance completa las reglas de sector y estado del registro. Los permisos base se crean al bootstrap y `0011_authorization_permissions` completa los roles existentes. Un usuario de consulta remota solo puede invocar `GET /api/v1/kpi`; no puede consultar catalogos ni acceder a formularios, administracion o mutaciones.
+
+## Migraciones de estabilizacion
+
+`0001_f0_foundation` conserva exactamente el contenido publicado en `v0.1.0-f0`. Como esa migracion inicial usa el metadata actual, las migraciones historicas posteriores detectan las tablas ya presentes al instalar desde base vacia, manteniendo su DDL original cuando se actualiza una instalacion historica. `0010_stabilization` agrega indices de revision y secuencia; `0011_authorization_permissions` agrega permisos base faltantes sin eliminar permisos existentes. El rollback es soportado para la estructura; el downgrade de `0011` no revoca grants que puedan haber sido administrados antes de la migracion.
 
 ## F6: adquisicion PLC preparatoria
 

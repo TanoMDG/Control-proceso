@@ -140,7 +140,7 @@ class AppliedLimit(Base):
     valor_medido: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     resultado: Mapped[str] = mapped_column(String(30), nullable=False)
     evaluado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    __table_args__ = (UniqueConstraint("tabla_origen", "id_registro", "campo", name="uq_registro_limite_aplicado"),)
+    __table_args__ = (UniqueConstraint("tabla_origen", "id_registro", "campo", name="uq_registro_limite_aplicado"), Index("ix_registro_limite_aplicado_origen_campo", "tabla_origen", "campo", "id_registro"))
 
 
 class SystemParameterVersion(Base, Timestamped):
@@ -537,6 +537,7 @@ class SyncConflict(Base):
     estado: Mapped[str] = mapped_column(String(20), default="ABIERTO", nullable=False)
     resuelto_por: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
     resolucion: Mapped[str | None] = mapped_column(String(500))
+    __table_args__ = (Index("ix_sync_conflict_open", "tabla", "client_uuid", "estado"),)
 
 
 class ImportRun(Base, Timestamped):

@@ -228,12 +228,35 @@ def evaluate_record(db: Session, record: OperationalRecord, actor_id) -> None:
                 continue
             if event is None:
                 scope = f"{record.modulo}:{field}:{record.datos.get('punto', record.datos.get('silo', 'general'))}"
-                previous = db.scalar(select(DeviationEvent).join(OperationalRecord, OperationalRecord.id == DeviationEvent.id_registro).where(DeviationEvent.secuencia_clave == scope, OperationalRecord.instante_medicion < record.instante_medicion, DeviationEvent.estado != "INVALIDADO").order_by(OperationalRecord.instante_medicion.desc()))
-                event = DeviationEvent(id_registro=record.id, campo=field, id_limite=limit_id, id_limite_version=version.id, id_desvio=version.id_desvio, clave_idempotencia=key, secuencia_clave=scope, estado="ESCALADO" if previous else "ABIERTO", valor_actual=value, vence_en=datetime.now(timezone.utc) + timedelta(hours=float(plan.plazo_horas)) if plan.plazo_horas else None)
+                prior_evaluations = db.execute(
+                    select(AppliedLimit, OperationalRecord)
+                    .join(OperationalRecord, OperationalRecord.id == AppliedLimit.id_registro)
+                    .where(
+                        AppliedLimit.tabla_origen == "registro_operativo",
+                        AppliedLimit.campo == field,
+                        OperationalRecord.modulo == record.modulo,
+                        OperationalRecord.estado != "ANULADO",
+                        OperationalRecord.instante_medicion < record.instante_medicion,
+                    )
+                    .order_by(OperationalRecord.instante_medicion.desc())
+                ).all()
+                previous = next(
+                    (
+                        applied
+                        for applied, prior_record in prior_evaluations
+                        if f"{prior_record.modulo}:{field}:{prior_record.datos.get('punto', prior_record.datos.get('silo', 'general'))}" == scope
+                    ),
+                    None,
+                )
+                previous_out_of_range = previous is not None and previous.resultado == "FUERA_DE_RANGO"
+                event = DeviationEvent(id_registro=record.id, campo=field, id_limite=limit_id, id_limite_version=version.id, id_desvio=version.id_desvio, clave_idempotencia=key, secuencia_clave=scope, estado="ESCALADO" if previous_out_of_range else "ABIERTO", valor_actual=value, vence_en=datetime.now(timezone.utc) + timedelta(hours=float(plan.plazo_horas)) if plan.plazo_horas else None)
                 db.add(event)
                 db.flush()
-                db.add(DeviationHistory(id_evento=event.id, estado_anterior=None, estado_nuevo=event.estado, comentario="Escalado por segunda medicion consecutiva" if previous else None, id_usuario=actor_id))
+                db.add(DeviationHistory(id_evento=event.id, estado_anterior=None, estado_nuevo=event.estado, comentario="Escalado por segunda medicion consecutiva" if previous_out_of_range else None, id_usuario=actor_id))
             else:
+                if event.estado == "INVALIDADO":
+                    event.estado = "ABIERTO"
+                    db.add(DeviationHistory(id_evento=event.id, estado_anterior="INVALIDADO", estado_nuevo="ABIERTO", comentario="Correccion vuelve a dejar la medicion fuera de rango", id_usuario=actor_id))
                 event.valor_actual = value
         elif event is not None and event.estado != "INVALIDADO":
             previous_state = event.estado

@@ -1,5 +1,7 @@
 from app.db.session import SessionLocal
-from app.models.core import BoxVerdesPeriod, KsiderSiloPeriod, MuaBoxPresence, User
+from datetime import date
+
+from app.models.core import BoxVerdesPeriod, KsiderSiloPeriod, MuaBoxPresence, PersonPosition, User
 from tests.conftest import auth
 from tests.test_f1_operations import carga_token
 
@@ -8,9 +10,15 @@ def create_mua(client, token, preparer_id, day="2026-01-02"):
     return client.post("/api/v1/mua", headers=auth(token), json={"fecha_generacion": day, "id_preparador": preparer_id, "composicion": [{"componente": "Pasta recuperada", "referencia": "Lote A"}]})
 
 
+def make_palero(person_id):
+    with SessionLocal.begin() as db:
+        db.add(PersonPosition(id_persona=person_id, puesto="Palero", vigente_desde=date(2020, 1, 1)))
+
+
 def test_m4_identity_composition_and_m5_existing_mua_only(client, admin_token):
     with SessionLocal() as db:
         preparer_id = str(db.query(User).filter_by(nombre_usuario="admin.test").one().id_persona)
+    make_palero(preparer_id)
     created = create_mua(client, admin_token, preparer_id)
     assert created.status_code == 201
     mua = created.json()
@@ -28,6 +36,8 @@ def test_m4_identity_composition_and_m5_existing_mua_only(client, admin_token):
 def test_mua_creation_requires_supervision_and_boxes_can_hold_two_muas(client, admin_token):
     person, carga = carga_token(client, admin_token, "Molienda")
     assert create_mua(client, carga, person["id"]).status_code == 403
+    assert create_mua(client, admin_token, person["id"]).status_code == 422
+    make_palero(person["id"])
     first, second = create_mua(client, admin_token, person["id"]).json(), create_mua(client, admin_token, person["id"]).json()
     for mua in (first, second):
         assert client.post("/api/v1/trazabilidad/mua-box", headers=auth(carga), json={"id_mua": mua["id"], "box": "2", "desde": "2026-01-02T08:00:00Z"}).status_code == 201
@@ -38,6 +48,7 @@ def test_mua_creation_requires_supervision_and_boxes_can_hold_two_muas(client, a
 def test_temporal_handoffs_mapping_and_certainty_trace(client, admin_token):
     with SessionLocal() as db:
         preparer_id = str(db.query(User).filter_by(nombre_usuario="admin.test").one().id_persona)
+    make_palero(preparer_id)
     mua = create_mua(client, admin_token, preparer_id).json()
     assert client.post("/api/v1/trazabilidad/mua-box", headers=auth(admin_token), json={"id_mua": mua["id"], "box": "1", "desde": "2026-01-02T08:00:00Z"}).status_code == 201
     assert client.post("/api/v1/trazabilidad/box-verdes", headers=auth(admin_token), json={"box": "1", "desde": "2026-01-02T08:10:00Z"}).status_code == 201

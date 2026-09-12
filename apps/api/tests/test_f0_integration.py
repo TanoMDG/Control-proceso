@@ -34,6 +34,18 @@ def test_backend_enforces_permissions_not_frontend(client, admin_token):
     assert client.get("/api/v1/catalogos/box", headers=auth(token)).status_code == 200
 
 
+def test_remote_profile_is_limited_to_dashboard_summary(client, admin_token):
+    headers = auth(admin_token)
+    person = client.post("/api/v1/personas", headers=headers, json={"legajo": "TEST-REMOTE", "apellido_nombre": "Consulta Remota"}).json()
+    admin_role = next(role for role in client.get("/api/v1/roles", headers=headers).json() if role["nombre"] == "ADMIN")
+    created = client.post("/api/v1/usuarios", headers=headers, json={"id_persona": person["id"], "nombre_usuario": "remote.dashboard", "password": "Clave-de-prueba-remote-123", "id_rol": admin_role["id"], "sector": "Administracion", "consulta_remota": True})
+    assert created.status_code == 201
+    token = client.post("/api/v1/auth/login", json={"username": "remote.dashboard", "password": "Clave-de-prueba-remote-123"}).json()["access_token"]
+    assert client.get("/api/v1/kpi", headers=auth(token)).status_code == 200
+    assert client.get("/api/v1/kpi/tendencias?metrica=humedad_verdes", headers=auth(token)).status_code == 403
+    assert client.get("/api/v1/catalogos/box", headers=auth(token)).status_code == 403
+
+
 def test_limit_versions_do_not_overlap_and_historical_read_is_stable(client, admin_token):
     headers = auth(admin_token)
     assert client.post("/api/v1/limites", headers=headers, json={"id": "TEST-L01", "variable": "Variable test", "etapa": "Prueba", "unidad": "%", "tipo_dato": "Especificacion"}).status_code == 201

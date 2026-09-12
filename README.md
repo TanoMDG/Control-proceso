@@ -49,7 +49,7 @@ Las advertencias de dispersion usan exclusivamente las versiones configuradas de
 
 ## Operacion Offline
 
-Los formularios F1, F3, F4 y F5 guardan cargas sin conexion en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicacion reintenta la sincronizacion sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Los rechazos 4xx se muestran al operador y no se encolan como si fueran recuperables. Las validaciones industriales y los conflictos de revision siguen resolviendose exclusivamente en backend.
+Las cargas que la web soporta offline se guardan en IndexedDB con su `client_uuid`, endpoint, metodo y payload originales. Al volver la conectividad solo se reintentan filas `pendiente`; un 409 queda en `conflicto` para SUPERVISION/ADMIN y un 4xx queda en `error`, sin reintentos ciegos. El service worker precachea el shell, conserva los recursos propios obtenidos durante el uso y nunca cachea rutas `/api/`.
 
 ## Trazabilidad MUA (F4)
 
@@ -105,4 +105,4 @@ La validacion es dry-run: no importa ni modifica datos. Consulte `docs/data-impo
 
 ## Entornos Y Seguridad
 
-Use archivos `.env` diferentes para desarrollo, prueba y produccion. Nunca suba secretos al repositorio. Produccion debe configurar HTTPS, respaldos, RPO/RTO, expiracion de sesion/PIN y MFA de ADMIN conforme a la politica de Soporte, que la especificacion deja pendiente.
+Use archivos `.env` diferentes para desarrollo, prueba y produccion. `POSTGRES_PASSWORD`, `POSTGRES_TEST_PASSWORD`, `DATABASE_URL`, `JWT_SECRET` y `TEST_JWT_SECRET` son obligatorios en Compose; `.env.example` contiene solo marcadores que deben reemplazarse. La API y la web se ejecutan sin privilegios, con filesystem de solo lectura, sin capacidades Linux adicionales y sin secretos por defecto. Produccion debe configurar HTTPS, respaldos, RPO/RTO, expiracion de sesion/PIN y MFA de ADMIN conforme a la politica de Soporte, que la especificacion deja pendiente.

@@ -80,14 +80,30 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("escala_silo_punto")
-    op.drop_table("escala_silo")
-    op.drop_table("plan_reaccion")
-    op.drop_column("importacion_resultado", "valor_normativo")
-    op.drop_column("importacion_resultado", "valor_original")
-    op.drop_column("limite", "nota_fuente")
-    op.drop_column("limite", "referencia_fuente")
-    op.drop_constraint("fk_persona_puesto_linea", "persona_puesto", type_="foreignkey")
-    op.drop_constraint("fk_persona_linea_habitual", "persona", type_="foreignkey")
-    op.drop_column("persona", "es_cuenta_tecnica_dev")
-    op.drop_column("persona", "id_linea_habitual")
+    inspector = sa.inspect(op.get_bind())
+    tables = set(inspector.get_table_names())
+
+    for table in ("escala_silo_punto", "escala_silo", "plan_reaccion"):
+        if table in tables:
+            op.drop_table(table)
+
+    for table, column in (
+        ("importacion_resultado", "valor_normativo"),
+        ("importacion_resultado", "valor_original"),
+        ("limite", "nota_fuente"),
+        ("limite", "referencia_fuente"),
+    ):
+        if table in tables and column in {item["name"] for item in inspector.get_columns(table)}:
+            op.drop_column(table, column)
+
+    for table, column in (("persona_puesto", "id_linea"), ("persona", "id_linea_habitual")):
+        if table not in tables:
+            continue
+        for foreign_key in inspector.get_foreign_keys(table):
+            if foreign_key["constrained_columns"] == [column] and foreign_key["name"]:
+                op.drop_constraint(foreign_key["name"], table, type_="foreignkey")
+        if column in {item["name"] for item in inspector.get_columns(table)}:
+            op.drop_column(table, column)
+
+    if "persona" in tables and "es_cuenta_tecnica_dev" in {item["name"] for item in inspector.get_columns("persona")}:
+        op.drop_column("persona", "es_cuenta_tecnica_dev")

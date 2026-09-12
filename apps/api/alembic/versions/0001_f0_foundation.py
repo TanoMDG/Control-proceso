@@ -16,16 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Later models share this metadata. Create only the F0 baseline so later
-    # revisions remain responsible for their own DDL on a fresh deployment.
-    initial_table_names = (
-        "persona", "rol", "usuario", "permiso", "persona_puesto", "sesion_dispositivo",
-        "catalogo", "limite", "limite_version", "registro_limite_aplicado",
-        "parametro_sistema_version", "calendario_produccion", "recepcion_turno", "turno_cierre",
-        "auditoria", "revision_sincronizacion", "conflicto_sincronizacion", "importacion_datos",
-        "importacion_resultado", "hecho_medicion_temporal", "hecho_turno", "recalculo_analitico",
-    )
-    Base.metadata.create_all(bind=op.get_bind(), tables=[Base.metadata.tables[name] for name in initial_table_names])
+    # F0 is the initial schema; migrations, not application startup, own DDL.
+    Base.metadata.create_all(bind=op.get_bind())
     op.execute(
         """
         CREATE EXTENSION IF NOT EXISTS btree_gist;
