@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3, F4 y F5 estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3, F4, F5 y la infraestructura preparatoria F6 estan disponibles.
 
 ## Requisitos
 
@@ -66,6 +66,18 @@ M7 registra intervenciones de mantenimiento con equipo, responsable, tipo, inter
 `Pendiente de configuracion: no hay responsables de mantenimiento configurados.`
 
 La interfaz muestra esa sentencia y deshabilita el alta M7 hasta que ADMIN configure una persona activa con el puesto vigente `Mantenimiento`. El backend aplica el mismo filtro para impedir responsables no configurados.
+
+## Infraestructura PLC De Solo Lectura (F6)
+
+F6 no abre conexiones de planta ni implementa protocolos industriales. La unica implementacion disponible es el adaptador `TEST_SIMULATOR`, detras de la interfaz de solo lectura `ReadOnlyPlcAdapter`; no existe ninguna operacion de escritura de PLC.
+
+ADMIN configura explicitamente una fuente y sus tags en `/plc/configuracion`. Cada tag exige metrica, referencia, unidad, factor y offset de escala, intervalo de muestreo y agregacion, retencion de crudo y agregado, turno, sector, estado y, para el simulador, valor/calidad de prueba. No hay IP, protocolo, tag, unidad, escala, frecuencia ni valor de planta precargados.
+
+`POST /api/v1/plc/configuracion/{fuente_id}/simular-lectura` ejecuta manualmente solo el simulador configurado, respeta el intervalo de muestreo, conserva valor crudo, valor escalado, timestamps de fuente/adquisicion y calidad, actualiza agregados por ventana y proyecta lecturas buenas en `hecho_medicion_temporal`. La retencion se aplica en cada muestra. Cada cambio de configuracion y ejecucion del simulador deja auditoria.
+
+SUPERVISION/ADMIN consulta `/api/v1/plc/estado`. El recalculo de KPI preserva los hechos de origen PLC; F6 no programa adquisicion, no conecta a un PLC y no debe habilitarse para operacion hasta una fase posterior aprobada.
+
+F6 software implementado. Puesta en marcha PLC pendiente de datos reales de planta y prueba de lectura autorizada.
 
 ## Pruebas
 

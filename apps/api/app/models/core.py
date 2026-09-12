@@ -496,6 +496,92 @@ class TemporalMeasurementFact(Base):
     __table_args__ = (Index("ix_hecho_temporal_contexto", "fecha_operativa", "turno_codigo", "metrica"),)
 
 
+class PlcReadSource(Base, Timestamped):
+    __tablename__ = "plc_lectura_fuente"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    nombre: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    adaptador: Mapped[str] = mapped_column(String(30), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    __table_args__ = (CheckConstraint("adaptador = 'TEST_SIMULATOR'", name="ck_plc_fuente_adaptador_test"),)
+
+
+class PlcReadTag(Base):
+    __tablename__ = "plc_lectura_tag"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_fuente: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plc_lectura_fuente.id", ondelete="RESTRICT"), nullable=False)
+    metrica: Mapped[str] = mapped_column(String(100), nullable=False)
+    referencia_tag: Mapped[str] = mapped_column(String(200), nullable=False)
+    unidad: Mapped[str] = mapped_column(String(20), nullable=False)
+    escala_factor: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    escala_offset: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    muestreo_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    agregacion_segundos: Mapped[int] = mapped_column(Integer, nullable=False)
+    retencion_crudo_dias: Mapped[int] = mapped_column(Integer, nullable=False)
+    retencion_agregado_dias: Mapped[int] = mapped_column(Integer, nullable=False)
+    turno_codigo: Mapped[str] = mapped_column(String(30), nullable=False)
+    sector: Mapped[str] = mapped_column(String(40), nullable=False)
+    valor_simulado_crudo: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    calidad_simulada: Mapped[str | None] = mapped_column(String(20))
+    activo: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("id_fuente", "metrica", name="uq_plc_tag_fuente_metrica"),
+        UniqueConstraint("id_fuente", "referencia_tag", name="uq_plc_tag_fuente_referencia"),
+        CheckConstraint("escala_factor <> 0", name="ck_plc_tag_escala_factor"),
+        CheckConstraint("muestreo_segundos > 0 AND agregacion_segundos > 0", name="ck_plc_tag_intervalos"),
+        CheckConstraint("retencion_crudo_dias > 0 AND retencion_agregado_dias > 0", name="ck_plc_tag_retencion"),
+        CheckConstraint("calidad_simulada IS NULL OR calidad_simulada IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_tag_calidad_simulada"),
+    )
+
+
+class PlcRawReading(Base):
+    __tablename__ = "plc_lectura_cruda"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_tag: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plc_lectura_tag.id", ondelete="RESTRICT"), nullable=False)
+    instante_fuente: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    adquirido_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    valor_crudo: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    valor_escalado: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    unidad: Mapped[str] = mapped_column(String(20), nullable=False)
+    calidad: Mapped[str] = mapped_column(String(20), nullable=False)
+    adaptador: Mapped[str] = mapped_column(String(30), nullable=False)
+    __table_args__ = (
+        CheckConstraint("calidad IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_lectura_cruda_calidad"),
+        Index("ix_plc_lectura_cruda_tag_instante", "id_tag", "instante_fuente"),
+    )
+
+
+class PlcReadingAggregate(Base):
+    __tablename__ = "plc_lectura_agregada"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_tag: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plc_lectura_tag.id", ondelete="RESTRICT"), nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta_exclusiva: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    cantidad_muestras: Mapped[int] = mapped_column(Integer, nullable=False)
+    valor_minimo: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    valor_maximo: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    valor_promedio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    ultimo_valor: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    calidad: Mapped[str] = mapped_column(String(20), nullable=False)
+    calculado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("id_tag", "desde", name="uq_plc_agregado_tag_desde"),
+        CheckConstraint("hasta_exclusiva > desde", name="ck_plc_agregado_intervalo"),
+        CheckConstraint("cantidad_muestras > 0", name="ck_plc_agregado_muestras"),
+        CheckConstraint("calidad IN ('GOOD', 'UNCERTAIN', 'BAD')", name="ck_plc_agregado_calidad"),
+        Index("ix_plc_lectura_agregada_tag_desde", "id_tag", "desde"),
+    )
+
+
+class PlcAcquisitionStatus(Base):
+    __tablename__ = "plc_estado_adquisicion"
+    id_fuente: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("plc_lectura_fuente.id", ondelete="CASCADE"), primary_key=True)
+    estado: Mapped[str] = mapped_column(String(30), nullable=False)
+    ultimo_intento_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultima_muestra_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_error: Mapped[str | None] = mapped_column(Text)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class ShiftFact(Base):
     __tablename__ = "hecho_turno"
     id: Mapped[uuid.UUID] = uuid_pk()

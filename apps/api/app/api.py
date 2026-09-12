@@ -7,16 +7,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import HTMLResponse
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
-from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, PlcAcquisitionStatus, PlcReadSource, PlcReadTag, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
+from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PlcAcquisitionStatusOutput, PlcReadSourceInput, PlcReadSourceOutput, PlcReadSourcePatch, PlcReadTagInput, PlcReadTagOutput, PlcReadTagPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
 from app.services.analytics import rebuild_analytics
+from app.services.plc import acquire_test_samples
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
@@ -111,7 +112,9 @@ def maintenance_responsibles(db: Session, on_date: date) -> list[Person]:
 
 def maintenance_record_output(db: Session, record: MaintenanceRecord) -> dict:
     correlations = list(db.scalars(select(MaintenanceCorrelation).where(MaintenanceCorrelation.id_registro_mantenimiento == record.id)))
-    return {**audit_payload(record), "correlaciones": [{"tipo_referencia": row.tipo_referencia, "id_referencia": str(row.id_referencia)} for row in correlations]}
+    payload = audit_payload(record)
+    payload["campos_madirex"] = record.campos_madirex
+    return {**payload, "correlaciones": [{"tipo_referencia": row.tipo_referencia, "id_referencia": str(row.id_referencia)} for row in correlations]}
 
 
 def trace_time(value: datetime) -> datetime:
@@ -135,7 +138,120 @@ def overlaps(start: datetime, end: datetime | None, other_start: datetime, other
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F5"}
+    return {"status": "ok", "phase": "F6"}
+
+
+def assert_plc_tag_values(tag: PlcReadTag) -> None:
+    if tag.escala_factor == 0:
+        raise HTTPException(status_code=422, detail="escala_factor no puede ser cero")
+
+
+def plc_status_output(db: Session, source: PlcReadSource) -> dict:
+    status_row = db.get(PlcAcquisitionStatus, source.id)
+    active_tags = db.scalar(select(func.count()).select_from(PlcReadTag).where(PlcReadTag.id_fuente == source.id, PlcReadTag.activo.is_(True))) or 0
+    return {
+        "id_fuente": source.id,
+        "fuente": source.nombre,
+        "adaptador": source.adaptador,
+        "fuente_activa": source.activo,
+        "tags_activos": active_tags,
+        "estado": status_row.estado if status_row else "SIN_MUESTRAS",
+        "ultimo_intento_en": status_row.ultimo_intento_en if status_row else None,
+        "ultima_muestra_en": status_row.ultima_muestra_en if status_row else None,
+        "ultimo_error": status_row.ultimo_error if status_row else None,
+    }
+
+
+@router.get("/plc/configuracion", response_model=list[PlcReadSourceOutput])
+def list_plc_sources(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return list(db.scalars(select(PlcReadSource).order_by(PlcReadSource.nombre)))
+
+
+@router.post("/plc/configuracion", response_model=PlcReadSourceOutput, status_code=201)
+def create_plc_source(payload: PlcReadSourceInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    source = PlcReadSource(**payload.model_dump())
+    db.add(source)
+    db.flush()
+    db.add(PlcAcquisitionStatus(id_fuente=source.id, estado="CONFIGURADO"))
+    write_audit(db, user_id=actor.id, table="plc_lectura_fuente", record_id=str(source.id), action="ALTA", after=audit_payload(source), reason="Configuracion F6: solo adaptador TEST_SIMULATOR")
+    db.commit()
+    db.refresh(source)
+    return source
+
+
+@router.patch("/plc/configuracion/{source_id}", response_model=PlcReadSourceOutput)
+def update_plc_source(source_id: UUID, payload: PlcReadSourcePatch, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    source = db.get(PlcReadSource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Fuente PLC inexistente")
+    before = audit_payload(source)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(source, field, value)
+    write_audit(db, user_id=actor.id, table="plc_lectura_fuente", record_id=str(source.id), action="MODIFICACION", before=before, after=audit_payload(source), reason="Configuracion F6 de solo lectura")
+    db.commit()
+    db.refresh(source)
+    return source
+
+
+@router.get("/plc/configuracion/{source_id}/tags", response_model=list[PlcReadTagOutput])
+def list_plc_tags(source_id: UUID, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.get(PlcReadSource, source_id) is None:
+        raise HTTPException(status_code=404, detail="Fuente PLC inexistente")
+    return list(db.scalars(select(PlcReadTag).where(PlcReadTag.id_fuente == source_id).order_by(PlcReadTag.metrica)))
+
+
+@router.post("/plc/configuracion/{source_id}/tags", response_model=PlcReadTagOutput, status_code=201)
+def create_plc_tag(source_id: UUID, payload: PlcReadTagInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.get(PlcReadSource, source_id) is None:
+        raise HTTPException(status_code=404, detail="Fuente PLC inexistente")
+    tag = PlcReadTag(id_fuente=source_id, **payload.model_dump())
+    assert_plc_tag_values(tag)
+    db.add(tag)
+    db.flush()
+    write_audit(db, user_id=actor.id, table="plc_lectura_tag", record_id=str(tag.id), action="ALTA", after=audit_payload(tag), reason="Tag F6 de solo lectura")
+    db.commit()
+    db.refresh(tag)
+    return tag
+
+
+@router.patch("/plc/configuracion/{source_id}/tags/{tag_id}", response_model=PlcReadTagOutput)
+def update_plc_tag(source_id: UUID, tag_id: UUID, payload: PlcReadTagPatch, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    tag = db.get(PlcReadTag, tag_id)
+    if tag is None or tag.id_fuente != source_id:
+        raise HTTPException(status_code=404, detail="Tag PLC inexistente")
+    before = audit_payload(tag)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(tag, field, value)
+    assert_plc_tag_values(tag)
+    write_audit(db, user_id=actor.id, table="plc_lectura_tag", record_id=str(tag.id), action="MODIFICACION", before=before, after=audit_payload(tag), reason="Cambio de tag, escala, muestreo, agregacion o retencion")
+    db.commit()
+    db.refresh(tag)
+    return tag
+
+
+@router.post("/plc/configuracion/{source_id}/simular-lectura")
+def sample_plc_test_source(source_id: UUID, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    source = db.get(PlcReadSource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Fuente PLC inexistente")
+    if not source.activo:
+        raise HTTPException(status_code=422, detail="La fuente PLC esta inactiva")
+    try:
+        samples = acquire_test_samples(db, source)
+    except ValueError as error:
+        status_row = db.get(PlcAcquisitionStatus, source.id)
+        if status_row is not None:
+            status_row.estado, status_row.ultimo_error = "ERROR", str(error)
+        db.commit()
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    write_audit(db, user_id=actor.id, table="plc_estado_adquisicion", record_id=str(source.id), action="MUESTRA_TEST", after={"muestras_guardadas": samples, "adaptador": source.adaptador}, reason="Ejecucion manual del simulador F6; no se realizo conexion a PLC")
+    db.commit()
+    return {"muestras_guardadas": samples, "adaptador": source.adaptador}
+
+
+@router.get("/plc/estado", response_model=list[PlcAcquisitionStatusOutput])
+def get_plc_acquisition_status(_: User = Depends(require_supervision), db: Session = Depends(get_db)):
+    return [plc_status_output(db, source) for source in db.scalars(select(PlcReadSource).order_by(PlcReadSource.nombre))]
 
 
 @router.get("/exportar", response_class=HTMLResponse)
@@ -374,7 +490,7 @@ def create_maintenance_product_format(product_id: UUID, payload: MaintenanceProd
     if format_item is None or not format_item.activo or format_item.tipo != "formato":
         raise HTTPException(status_code=422, detail="Formato inexistente o inactivo")
     assert_product_format_overlap(db, product_id, payload.id_formato, payload.vigente_desde, payload.vigente_hasta_exclusiva)
-    version = MaintenanceProductFormatVersion(id_producto=product_id, id_formato=payload.id_formato, id_usuario_alta=actor.id, **payload.model_dump())
+    version = MaintenanceProductFormatVersion(id_producto=product_id, id_formato=payload.id_formato, id_usuario_alta=actor.id, **payload.model_dump(exclude={"id_formato"}))
     db.add(version); db.flush()
     write_audit(db, user_id=actor.id, table="producto_formato_mantenimiento_version", record_id=str(version.id), action="ALTA", after=audit_payload(version), reason=payload.motivo_cambio)
     db.commit(); db.refresh(version); return version
