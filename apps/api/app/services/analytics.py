@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LimitVersion, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
+from app.models.core import AnalyticsRun, AppliedLimit, DeviationEvent, LimitVersion, MaintenanceCorrelation, MaintenanceRecord, OperationalRecord, ProductionCalendar, ShiftFact, TemporalMeasurementFact
 
 MEASUREMENTS = {"M1": {"humedad_verdes": "%", "residuo": "%", "aeroseparador": "%"}, "M2": {"humedad_salida": "%", "dosificacion_calc": "L/t"}, "M3": {"humedad": "%", "temperatura": "C", "humedad_ksider": "%", "toneladas_calculadas": "t"}, "M9": {"humedad_pasta": "%", "presion": "kg/cm2", "humedad_residual": "%"}}
 
@@ -21,7 +21,7 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
     db.execute(delete(TemporalMeasurementFact)); db.execute(delete(ShiftFact))
     records = list(db.scalars(select(OperationalRecord).where(OperationalRecord.estado != "ANULADO").order_by(OperationalRecord.instante_medicion)))
     applied = {(row.id_registro, row.campo): row for row in db.scalars(select(AppliedLimit).where(AppliedLimit.tabla_origen == "registro_operativo"))}
-    buckets = defaultdict(lambda: {"values": defaultdict(list), "stops": [], "deviations": defaultdict(int)})
+    buckets = defaultdict(lambda: {"values": defaultdict(list), "stops": [], "deviations": defaultdict(int), "maintenance_types": defaultdict(int), "maintenance_correlations": defaultdict(int)})
     for record in records:
         line = record.datos.get("linea") if record.modulo in {"M8", "M9", "M10"} else None
         key = (record.fecha_operativa, record.turno_codigo, line or "PLANTA", record.sector)
@@ -64,6 +64,20 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
             dispersion = number(record.datos.get("dispersion_mm"))
             if dispersion is not None:
                 bucket["values"]["dispersion_mm"].append(float(dispersion))
+    correlations_by_record = defaultdict(list)
+    for correlation in db.scalars(select(MaintenanceCorrelation)):
+        correlations_by_record[correlation.id_registro_mantenimiento].append(correlation)
+    for record in db.scalars(select(MaintenanceRecord).order_by(MaintenanceRecord.inicio)):
+        key = (record.fecha_operativa, record.turno_codigo, "PLANTA", "Mantenimiento")
+        bucket = buckets[key]
+        bucket["values"]["intervenciones_mantenimiento"].append(1.0)
+        bucket["maintenance_types"][record.tipo] += 1
+        if record.fin is not None:
+            duration = (record.fin - record.inicio).total_seconds() / 3600
+            bucket["values"]["horas_mantenimiento"].append(duration)
+            db.add(TemporalMeasurementFact(fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_operativo=record.inicio, tabla_origen="registro_mantenimiento", id_registro_origen=record.id, metrica="duracion_mantenimiento_horas", valor=Decimal(str(duration)), unidad="h", origen_dato="digital_directo", contexto={"modulo": "M7", "sector": "Mantenimiento", "equipo_id": str(record.id_equipo), "tipo": record.tipo, "madirex_informativo": bool(record.campos_madirex)}))
+        for correlation in correlations_by_record[record.id]:
+            bucket["maintenance_correlations"][correlation.tipo_referencia] += 1
     for event in db.scalars(select(DeviationEvent)):
         record = db.get(OperationalRecord, event.id_registro)
         if record and record.estado != "ANULADO":
@@ -79,8 +93,8 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
                 union += (end - start).total_seconds() / 3600; last = [start, end]
             elif end > last[1]:
                 union += (end - last[1]).total_seconds() / 3600; last[1] = end
-        metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
-        metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"])})
+        metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor", "intervenciones_mantenimiento", "horas_mantenimiento"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
+        metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"]), "mantenimiento_por_tipo": dict(bucket["maintenance_types"]), "correlaciones_mantenimiento": dict(bucket["maintenance_correlations"])})
         db.add(ShiftFact(fecha_operativa=key[0], turno_codigo=key[1], linea_clave=key[2], contexto_clave=key[3], metricas=metrics))
     run.estado, run.completado_en = "COMPLETADO", datetime.now(timezone.utc)
     return run

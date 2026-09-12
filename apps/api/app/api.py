@@ -11,8 +11,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
-from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
+from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
+from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
 from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_data
@@ -20,6 +20,7 @@ from app.services.analytics import rebuild_analytics
 from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
+MAINTENANCE_RESPONSIBLES_PENDING = "Pendiente de configuracion: no hay responsables de mantenimiento configurados."
 
 
 def get_role(db: Session, user: User) -> Role:
@@ -53,7 +54,7 @@ def expected_operational_date(turno_codigo: str, instante_medicion: datetime) ->
 def printable_form(modulo: str) -> str:
     labels = {
         "m1": "M1 Molienda", "m2": "M2 Madirex", "m3": "M3 Lecho fluido / K-Sider / Silos",
-        "m6": "M6 Paradas", "m8": "M8 Vaciado de tolva", "m9": "M9 Prensado", "m10": "M10 Espesores",
+        "m6": "M6 Paradas", "m7": "M7 Mantenimiento", "m8": "M8 Vaciado de tolva", "m9": "M9 Prensado", "m10": "M10 Espesores",
     }
     title = labels.get(modulo.lower())
     if title is None:
@@ -90,6 +91,29 @@ def assert_traceability_access(db: Session, actor: User, *, create_mua: bool = F
         raise HTTPException(status_code=403, detail="La consulta de trazabilidad requiere SUPERVISION o ADMIN")
 
 
+def assert_maintenance_access(db: Session, actor: User) -> None:
+    role = get_role(db, actor).nombre
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="Permiso de mantenimiento insuficiente")
+    if role == "CARGA" and actor.sector != "Mantenimiento":
+        raise HTTPException(status_code=403, detail="CARGA solo opera mantenimiento")
+
+
+def maintenance_responsibles(db: Session, on_date: date) -> list[Person]:
+    statement = select(Person).join(PersonPosition, PersonPosition.id_persona == Person.id).where(
+        Person.activo.is_(True),
+        PersonPosition.puesto.ilike("mantenimiento"),
+        PersonPosition.vigente_desde <= on_date,
+        or_(PersonPosition.vigente_hasta.is_(None), PersonPosition.vigente_hasta > on_date),
+    ).order_by(Person.apellido_nombre)
+    return list(db.scalars(statement).unique())
+
+
+def maintenance_record_output(db: Session, record: MaintenanceRecord) -> dict:
+    correlations = list(db.scalars(select(MaintenanceCorrelation).where(MaintenanceCorrelation.id_registro_mantenimiento == record.id)))
+    return {**audit_payload(record), "correlaciones": [{"tipo_referencia": row.tipo_referencia, "id_referencia": str(row.id_referencia)} for row in correlations]}
+
+
 def trace_time(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise HTTPException(status_code=422, detail="Los periodos deben incluir zona horaria")
@@ -111,12 +135,22 @@ def overlaps(start: datetime, end: datetime | None, other_start: datetime, other
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok", "phase": "F4"}
+    return {"status": "ok", "phase": "F5"}
 
 
 @router.get("/exportar", response_class=HTMLResponse)
 def export_blank_form(modulo: str, _: User = Depends(require_permission("M0", "ver"))) -> str:
     return printable_form(modulo)
+
+
+@router.post("/registros/m7", response_model=MaintenanceRecordOutput, status_code=201)
+def create_m7_record_alias(payload: MaintenanceRecordInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    return create_maintenance_record(payload, actor, db)
+
+
+@router.get("/registros/m7", response_model=list[MaintenanceRecordOutput])
+def list_m7_records_alias(desde: date | None = None, hasta: date | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    return list_maintenance_records(desde, hasta, actor, db)
 
 
 @router.post("/registros/{modulo}", response_model=OperationalRecordOutput, status_code=201)
@@ -235,6 +269,175 @@ def void_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor:
     record.estado, record.motivo_anulacion = "ANULADO", payload.comentario
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="ANULACION", after=audit_payload(record), reason=payload.comentario)
     db.commit(); db.refresh(record); return record
+
+
+def assert_active_maintenance_master(item, label: str) -> None:
+    if item is None or not item.activo:
+        raise HTTPException(status_code=422, detail=f"{label} inexistente o inactivo")
+
+
+def assert_product_format_overlap(db: Session, product_id: UUID, format_id: UUID, start: date, end: date | None) -> None:
+    versions = db.scalars(select(MaintenanceProductFormatVersion).where(MaintenanceProductFormatVersion.id_producto == product_id, MaintenanceProductFormatVersion.id_formato == format_id))
+    for version in versions:
+        if (end is None or version.vigente_desde < end) and (version.vigente_hasta_exclusiva is None or start < version.vigente_hasta_exclusiva):
+            raise HTTPException(status_code=422, detail="La version producto-formato se solapa con una relacion existente")
+
+
+@router.get("/mantenimiento/responsables")
+def list_maintenance_responsibles(fecha: date = Query(default_factory=date.today), actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    rows = maintenance_responsibles(db, fecha)
+    return {"responsables": [{"id": str(row.id), "legajo": row.legajo, "apellido_nombre": row.apellido_nombre} for row in rows], "mensaje_configuracion": None if rows else MAINTENANCE_RESPONSIBLES_PENDING}
+
+
+@router.get("/mantenimiento/equipos", response_model=list[MaintenanceEquipmentOutput])
+def list_maintenance_equipment(incluir_inactivos: bool = False, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    statement = select(MaintenanceEquipment).order_by(MaintenanceEquipment.codigo)
+    if not incluir_inactivos:
+        statement = statement.where(MaintenanceEquipment.activo.is_(True))
+    return list(db.scalars(statement))
+
+
+@router.post("/mantenimiento/equipos", response_model=MaintenanceEquipmentOutput, status_code=201)
+def create_maintenance_equipment(payload: MaintenanceEquipmentInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = MaintenanceEquipment(**payload.model_dump())
+    db.add(item); db.flush()
+    write_audit(db, user_id=actor.id, table="equipo_mantenimiento", record_id=str(item.id), action="ALTA", after=audit_payload(item))
+    db.commit(); db.refresh(item); return item
+
+
+@router.patch("/mantenimiento/equipos/{equipment_id}", response_model=MaintenanceEquipmentOutput)
+def update_maintenance_equipment(equipment_id: UUID, payload: MaintenanceEquipmentPatch, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = db.get(MaintenanceEquipment, equipment_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Equipo inexistente")
+    before, changes = audit_payload(item), payload.model_dump(exclude_unset=True)
+    if changes.get("activo") is False and not changes.get("fecha_baja"):
+        raise HTTPException(status_code=422, detail="fecha_baja es obligatoria al desactivar")
+    if changes.get("activo") is True:
+        changes["fecha_baja"] = None
+    for field, value in changes.items():
+        setattr(item, field, value)
+    write_audit(db, user_id=actor.id, table="equipo_mantenimiento", record_id=str(item.id), action="MODIFICACION", before=before, after=audit_payload(item), reason="Actualizacion de equipo")
+    db.commit(); db.refresh(item); return item
+
+
+@router.get("/mantenimiento/productos", response_model=list[MaintenanceProductOutput])
+def list_maintenance_products(incluir_inactivos: bool = False, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    statement = select(MaintenanceProduct).order_by(MaintenanceProduct.codigo)
+    if not incluir_inactivos:
+        statement = statement.where(MaintenanceProduct.activo.is_(True))
+    return list(db.scalars(statement))
+
+
+@router.post("/mantenimiento/productos", response_model=MaintenanceProductOutput, status_code=201)
+def create_maintenance_product(payload: MaintenanceProductInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = MaintenanceProduct(**payload.model_dump())
+    db.add(item); db.flush()
+    write_audit(db, user_id=actor.id, table="producto_mantenimiento", record_id=str(item.id), action="ALTA", after=audit_payload(item))
+    db.commit(); db.refresh(item); return item
+
+
+@router.patch("/mantenimiento/productos/{product_id}", response_model=MaintenanceProductOutput)
+def update_maintenance_product(product_id: UUID, payload: MaintenanceProductPatch, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    item = db.get(MaintenanceProduct, product_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Producto inexistente")
+    before, changes = audit_payload(item), payload.model_dump(exclude_unset=True)
+    if changes.get("activo") is False and not changes.get("fecha_baja"):
+        raise HTTPException(status_code=422, detail="fecha_baja es obligatoria al desactivar")
+    if changes.get("activo") is True:
+        changes["fecha_baja"] = None
+    for field, value in changes.items():
+        setattr(item, field, value)
+    write_audit(db, user_id=actor.id, table="producto_mantenimiento", record_id=str(item.id), action="MODIFICACION", before=before, after=audit_payload(item), reason="Actualizacion de producto")
+    db.commit(); db.refresh(item); return item
+
+
+@router.get("/mantenimiento/productos/{product_id}/formatos", response_model=list[MaintenanceProductFormatVersionOutput])
+def list_maintenance_product_formats(product_id: UUID, fecha: date = Query(default_factory=date.today), incluir_historicos: bool = False, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    if db.get(MaintenanceProduct, product_id) is None:
+        raise HTTPException(status_code=404, detail="Producto inexistente")
+    statement = select(MaintenanceProductFormatVersion).where(MaintenanceProductFormatVersion.id_producto == product_id)
+    if not incluir_historicos:
+        statement = statement.where(MaintenanceProductFormatVersion.vigente_desde <= fecha, or_(MaintenanceProductFormatVersion.vigente_hasta_exclusiva.is_(None), MaintenanceProductFormatVersion.vigente_hasta_exclusiva > fecha))
+    return list(db.scalars(statement.order_by(MaintenanceProductFormatVersion.vigente_desde)))
+
+
+@router.post("/mantenimiento/productos/{product_id}/formatos", response_model=MaintenanceProductFormatVersionOutput, status_code=201)
+def create_maintenance_product_format(product_id: UUID, payload: MaintenanceProductFormatVersionInput, actor: User = Depends(require_admin), db: Session = Depends(get_db)):
+    product, format_item = db.get(MaintenanceProduct, product_id), db.get(Catalog, payload.id_formato)
+    assert_active_maintenance_master(product, "Producto")
+    if format_item is None or not format_item.activo or format_item.tipo != "formato":
+        raise HTTPException(status_code=422, detail="Formato inexistente o inactivo")
+    assert_product_format_overlap(db, product_id, payload.id_formato, payload.vigente_desde, payload.vigente_hasta_exclusiva)
+    version = MaintenanceProductFormatVersion(id_producto=product_id, id_formato=payload.id_formato, id_usuario_alta=actor.id, **payload.model_dump())
+    db.add(version); db.flush()
+    write_audit(db, user_id=actor.id, table="producto_formato_mantenimiento_version", record_id=str(version.id), action="ALTA", after=audit_payload(version), reason=payload.motivo_cambio)
+    db.commit(); db.refresh(version); return version
+
+
+def resolve_maintenance_product_format(db: Session, payload: MaintenanceRecordInput) -> MaintenanceProductFormatVersion | None:
+    if payload.id_producto_formato_version:
+        version = db.get(MaintenanceProductFormatVersion, payload.id_producto_formato_version)
+        if version is None or not (version.vigente_desde <= payload.fecha_operativa and (version.vigente_hasta_exclusiva is None or payload.fecha_operativa < version.vigente_hasta_exclusiva)):
+            raise HTTPException(status_code=422, detail="La relacion producto-formato no esta vigente para la fecha operativa")
+        if payload.id_producto and version.id_producto != payload.id_producto or payload.id_formato and version.id_formato != payload.id_formato:
+            raise HTTPException(status_code=422, detail="La relacion producto-formato no coincide con la seleccion")
+        return version
+    if payload.id_producto is None and payload.id_formato is None:
+        return None
+    if payload.id_producto is None or payload.id_formato is None:
+        raise HTTPException(status_code=422, detail="Producto y formato deben seleccionarse juntos")
+    version = db.scalar(select(MaintenanceProductFormatVersion).where(MaintenanceProductFormatVersion.id_producto == payload.id_producto, MaintenanceProductFormatVersion.id_formato == payload.id_formato, MaintenanceProductFormatVersion.vigente_desde <= payload.fecha_operativa, or_(MaintenanceProductFormatVersion.vigente_hasta_exclusiva.is_(None), MaintenanceProductFormatVersion.vigente_hasta_exclusiva > payload.fecha_operativa)))
+    if version is None:
+        raise HTTPException(status_code=422, detail="No hay relacion producto-formato vigente para la fecha operativa")
+    return version
+
+
+@router.post("/mantenimiento/registros", response_model=MaintenanceRecordOutput, status_code=201)
+def create_maintenance_record(payload: MaintenanceRecordInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    if payload.inicio.tzinfo is None or payload.fin and payload.fin.tzinfo is None or payload.fin and payload.fin < payload.inicio:
+        raise HTTPException(status_code=422, detail="El intervalo de mantenimiento debe incluir zona horaria y ser valido")
+    existing = db.scalar(select(MaintenanceRecord).where(MaintenanceRecord.client_uuid == payload.client_uuid))
+    if existing is not None:
+        return maintenance_record_output(db, existing)
+    equipment = db.get(MaintenanceEquipment, payload.id_equipo)
+    assert_active_maintenance_master(equipment, "Equipo")
+    responsible_ids = {person.id for person in maintenance_responsibles(db, payload.fecha_operativa)}
+    if not responsible_ids:
+        raise HTTPException(status_code=422, detail=MAINTENANCE_RESPONSIBLES_PENDING)
+    if payload.id_responsable not in responsible_ids:
+        raise HTTPException(status_code=422, detail="El responsable debe tener un puesto de mantenimiento vigente")
+    product_format = resolve_maintenance_product_format(db, payload)
+    record = MaintenanceRecord(client_uuid=payload.client_uuid, fecha_operativa=payload.fecha_operativa, turno_codigo=payload.turno_codigo, inicio=payload.inicio, fin=payload.fin, id_equipo=equipment.id, id_producto_formato_version=product_format.id if product_format else None, id_responsable=payload.id_responsable, tipo=payload.tipo.strip(), descripcion=payload.descripcion.strip(), campos_madirex=payload.campos_madirex, creado_por=actor.id)
+    db.add(record); db.flush()
+    for stop_id in set(payload.ids_paradas):
+        stop = db.get(OperationalRecord, stop_id)
+        if stop is None or stop.modulo != "M6" or stop.estado == "ANULADO":
+            raise HTTPException(status_code=422, detail="La parada correlacionada debe ser un M6 existente y no anulado")
+        db.add(MaintenanceCorrelation(id_registro_mantenimiento=record.id, tipo_referencia="PARADA", id_referencia=stop_id))
+    for deviation_id in set(payload.ids_desvios):
+        if db.get(DeviationEvent, deviation_id) is None:
+            raise HTTPException(status_code=422, detail="El desvio correlacionado debe existir")
+        db.add(MaintenanceCorrelation(id_registro_mantenimiento=record.id, tipo_referencia="DESVIO", id_referencia=deviation_id))
+    write_audit(db, user_id=actor.id, table="registro_mantenimiento", record_id=str(record.id), action="ALTA", after=audit_payload(record), reason="Campos Madirex informativos; sin limite ni desvio automatico")
+    db.commit(); db.refresh(record); return maintenance_record_output(db, record)
+
+
+@router.get("/mantenimiento/registros", response_model=list[MaintenanceRecordOutput])
+def list_maintenance_records(desde: date | None = None, hasta: date | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_maintenance_access(db, actor)
+    statement = select(MaintenanceRecord)
+    if desde:
+        statement = statement.where(MaintenanceRecord.fecha_operativa >= desde)
+    if hasta:
+        statement = statement.where(MaintenanceRecord.fecha_operativa <= hasta)
+    return [maintenance_record_output(db, row) for row in db.scalars(statement.order_by(MaintenanceRecord.inicio.desc()))]
 
 
 def event_with_deadline(event: DeviationEvent, db: Session) -> DeviationEvent:
