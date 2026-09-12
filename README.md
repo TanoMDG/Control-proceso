@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT y el nucleo F1 de molienda estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1 y el dashboard F2 estan disponibles.
 
 ## Requisitos
 
@@ -36,6 +36,10 @@ Tras iniciar sesion, la web permite imprimir formularios M1, M2, M3, M6 y M10. C
 ## Operacion De Molienda (F1)
 
 Los modulos `M1`, `M2`, `M3` y `M6` se registran en `POST /api/v1/registros/{modulo}`. La API valida campos industriales y estructurales, conserva la version de limite aplicada, crea desvíos idempotentes y permite cerrar, validar, anular o corregir mediante comandos explícitos. CARGA solo opera su sector y sus borradores; SUPERVISION/ADMIN corrigen y cierran desvíos verificados.
+
+## Dashboard (F2)
+
+Ejecute `docker compose exec api python -m app.cli recalculate-analytics` de forma programada, o `POST /api/v1/analitica/recalcular` como SUPERVISION/ADMIN. `GET /api/v1/kpi` y `GET /api/v1/kpi/pareto-paradas` leen exclusivamente los hechos analíticos reconstruidos y devuelven la hora del último recálculo.
 
 ## Pruebas
 

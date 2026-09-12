@@ -278,3 +278,10 @@ class DeviationOutput(ORMModel):
     estado: str
     valor_actual: Decimal | None
     vence_en: datetime | None
+
+
+class AnalyticsRebuildOutput(ORMModel):
+    id: UUID
+    estado: str
+    solicitado_en: datetime
+    completado_en: datetime | None

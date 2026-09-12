@@ -8,6 +8,7 @@ function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState(sessionStorage.getItem("access_token") ?? "");
+  const [dashboard, setDashboard] = useState<{ ultimo_recalculo: string | null; hechos: Array<{ fecha_operativa: string; turno: string; contexto: string; metricas: Record<string, unknown> }> } | null>(null);
   const [message, setMessage] = useState("Ingrese con una cuenta habilitada por ADMIN.");
 
   async function login(event: FormEvent) {
@@ -37,6 +38,12 @@ function App() {
     window.open(url, "_blank", "noopener");
   }
 
+  async function loadDashboard() {
+    const response = await fetch(`${apiUrl}/kpi`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) { setMessage("No fue posible cargar el dashboard."); return; }
+    setDashboard(await response.json());
+  }
+
   return <main>
     <section className="panel">
       <p className="eyebrow">F0 · Fundamentos</p>
@@ -50,6 +57,8 @@ function App() {
         <h2>Formularios de transicion</h2>
         <p>Imprima y complete fecha, hora, turno y responsable. La carga posterior conserva esos datos originales.</p>
         {["m1", "m2", "m3", "m6", "m10"].map((module) => <button key={module} onClick={() => printForm(module)}>Imprimir {module.toUpperCase()}</button>)}
+        <button onClick={loadDashboard}>Actualizar dashboard</button>
+        {dashboard && <section className="dashboard"><h2>Dashboard M14</h2><p>Ultimo recálculo: {dashboard.ultimo_recalculo ?? "Sin recálculo"}</p>{dashboard.hechos.map((fact) => <article key={`${fact.fecha_operativa}-${fact.turno}-${fact.contexto}`}><strong>{fact.fecha_operativa} · {fact.turno} · {fact.contexto}</strong><pre>{JSON.stringify(fact.metricas, null, 2)}</pre></article>)}</section>}
       </section>}
       <p className="message" role="status">{message}</p>
     </section>
