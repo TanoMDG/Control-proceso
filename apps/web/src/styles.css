@@ -2,14 +2,14 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
 main { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #102b35, #1e505b); }
-.panel { width: min(100%, 440px); padding: 32px; background: #173d48; border: 1px solid #4f7780; border-radius: 12px; box-shadow: 0 16px 45px #06161b88; }
+.panel { width: min(100%, 900px); padding: 32px; background: #173d48; border: 1px solid #4f7780; border-radius: 12px; box-shadow: 0 16px 45px #06161b88; }
 .eyebrow { color: #ffbd59; font-weight: bold; letter-spacing: .08em; margin: 0; }
 h1 { margin: 12px 0 0; font-size: 2rem; }
 .subtitle { margin: 4px 0 28px; color: #bdd1d6; }
 form { display: grid; gap: 18px; }
 label { display: grid; gap: 7px; font-weight: bold; }
-input, button { min-height: 48px; border-radius: 6px; font-size: 1rem; }
-input { border: 1px solid #8caab0; padding: 10px; }
+input, select, button { min-height: 48px; border-radius: 6px; font-size: 1rem; }
+input, select { border: 1px solid #8caab0; padding: 10px; }
 button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-weight: bold; }
 .message { min-height: 42px; color: #c7dce0; line-height: 1.4; }
 .forms { display: grid; gap: 12px; }
@@ -18,3 +18,5 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .dashboard { border-top: 1px solid #4f7780; margin-top: 8px; padding-top: 12px; }
 .dashboard article { background: #102b35; border-radius: 6px; margin-top: 8px; padding: 10px; }
 .dashboard pre { overflow: auto; white-space: pre-wrap; color: #c7dce0; }
+.operational { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-top: 18px; border-top: 1px solid #4f7780; padding-top: 18px; }
+.operational h2, .operational button { grid-column: 1 / -1; }

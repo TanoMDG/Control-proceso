@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
 from app.db.session import SessionLocal
-from app.models.core import DeviationEvent, Limit, LimitVersion, ReactionPlan, Role, User
+from app.models.core import DeviationEvent, Limit, LimitVersion, ReactionPlan, SiloScale, SiloScalePoint, User
 from tests.conftest import auth
 
 
@@ -52,3 +52,19 @@ def test_m2_dosage_and_stoppage_rules(client, admin_token):
     valid_stop = client.post("/api/v1/registros/m6", headers=auth(token), json={**base, "datos": {"causa": "P12", "descripcion": "Atasco", "inicio": "2026-01-02T23:30:00+00:00", "fin": "2026-01-03T01:15:00+00:00"}})
     assert valid_stop.status_code == 201
     assert float(valid_stop.json()["datos"]["duracion_calculada_horas"]) == 1.75
+
+
+def test_m3_lecho_ksider_silos_and_physical_mapping(client, admin_token):
+    person, token = carga_token(client, admin_token)
+    with SessionLocal.begin() as db:
+        admin = db.query(User).filter_by(nombre_usuario="admin.test").one()
+        scale = SiloScale(grupo_silos="1-8", version=1, vigente_desde=date(2020, 1, 1), aprobada_por=admin.id)
+        db.add(scale); db.flush()
+        db.add_all([SiloScalePoint(id_escala=scale.id, altura_m="0", toneladas="100"), SiloScalePoint(id_escala=scale.id, altura_m="11", toneladas="0")])
+    base = {"fecha_operativa": "2026-01-02", "turno_codigo": "08-16", "instante_medicion": datetime(2026, 1, 2, 8, tzinfo=timezone.utc).isoformat(), "id_responsable": person["id"], "origen_dato": "digital_directo"}
+    assert client.post("/api/v1/registros/m3", headers=auth(token), json={**base, "datos": {"tipo_registro": "lecho", "humedad": "7.8", "temperatura": "330"}}).status_code == 201
+    assert client.post("/api/v1/registros/m3", headers=auth(token), json={**base, "datos": {"tipo_registro": "ksider_rechazo", "humedad_ksider": "7", "segundos_pesada": "60"}}).status_code == 201
+    stock = client.post("/api/v1/registros/m3", headers=auth(token), json={**base, "datos": {"tipo_registro": "stock_silo", "silo": 1, "linea": "L7", "altura_libre_m": "9"}})
+    assert stock.status_code == 201 and float(stock.json()["datos"]["toneladas_calculadas"]) < 20
+    invalid = client.post("/api/v1/registros/m3", headers=auth(token), json={**base, "datos": {"tipo_registro": "stock_silo", "silo": 1, "linea": "L6", "altura_libre_m": "9"}})
+    assert invalid.status_code == 422

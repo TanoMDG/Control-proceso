@@ -232,7 +232,7 @@ class DeferredRecordInput(BaseModel):
     fecha_operativa: date
     turno_codigo: str = Field(min_length=1, max_length=30)
     instante_medicion: datetime
-    id_responsable: UUID
+    id_responsable: UUID | None = None
     datos: dict = Field(default_factory=dict)
     origen_dato: str = Field(default="papel_digitado", pattern="^(digital_directo|papel_digitado)$")
 
