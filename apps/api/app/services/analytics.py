@@ -79,7 +79,7 @@ def rebuild_analytics(db: Session) -> AnalyticsRun:
                 union += (end - start).total_seconds() / 3600; last = [start, end]
             elif end > last[1]:
                 union += (end - last[1]).total_seconds() / 3600; last[1] = end
-        metrics = {metric: (sum(values) if metric in {"vaciados_tolva", "controles_espesor"} else sum(values) / len(values)) for metric, values in bucket["values"].items()}
+        metrics = {metric: round(sum(values) if metric in {"vaciados_tolva", "controles_espesor"} else sum(values) / len(values), 5) for metric, values in bucket["values"].items()}
         metrics.update({"horas_programadas": scheduled, "indisponibilidad_horas": union, "disponibilidad": (scheduled - union) / scheduled if scheduled else None, "paradas": bucket["stops"], "desvios_por_estado": dict(bucket["deviations"])})
         db.add(ShiftFact(fecha_operativa=key[0], turno_codigo=key[1], linea_clave=key[2], contexto_clave=key[3], metricas=metrics))
     run.estado, run.completado_en = "COMPLETADO", datetime.now(timezone.utc)
