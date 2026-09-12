@@ -191,6 +191,77 @@ class ShiftClose(Base):
     __table_args__ = (UniqueConstraint("fecha_operativa", "turno_codigo", "id_linea", name="uq_turno_cierre"),)
 
 
+class MUA(Base, Timestamped):
+    __tablename__ = "mua"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    fecha_generacion: Mapped[date] = mapped_column(Date, nullable=False)
+    id_preparador: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persona.id", ondelete="RESTRICT"), nullable=False)
+    composicion: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    creado_por: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+
+
+class MuaBoxPresence(Base):
+    __tablename__ = "mua_box_presencia"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_mua: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("mua.id", ondelete="RESTRICT"), nullable=False)
+    box: Mapped[str] = mapped_column(String(30), nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    certeza: Mapped[str] = mapped_column(String(15), default="CONFIRMADA", nullable=False)
+    id_usuario_inicio: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_fin: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    __table_args__ = (CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_mua_box_intervalo"), CheckConstraint("certeza IN ('CONFIRMADA', 'POTENCIAL', 'INFERIDA')", name="ck_mua_box_certeza"), Index("ix_mua_box_presencia_activa", "box", "hasta"))
+
+
+class BoxVerdesPeriod(Base):
+    __tablename__ = "box_verdes_periodo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    box: Mapped[str] = mapped_column(String(30), nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    id_usuario_inicio: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_fin: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    __table_args__ = (CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_box_verdes_intervalo"), Index("ix_box_verdes_activa", "hasta"))
+
+
+class KsiderSiloPeriod(Base):
+    __tablename__ = "ksider_silo_periodo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    receptor: Mapped[str] = mapped_column(String(30), default="K-SIDER", nullable=False)
+    silo: Mapped[int] = mapped_column(Integer, nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    id_usuario_inicio: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_fin: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    __table_args__ = (CheckConstraint("silo BETWEEN 1 AND 16", name="ck_ksider_silo_numero"), CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_ksider_silo_intervalo"), Index("ix_ksider_silo_activa", "receptor", "hasta"))
+
+
+class SiloLinePeriod(Base):
+    __tablename__ = "silo_linea_periodo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    silo: Mapped[int] = mapped_column(Integer, nullable=False)
+    linea: Mapped[str] = mapped_column(String(10), nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    id_usuario_inicio: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_fin: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    __table_args__ = (CheckConstraint("silo BETWEEN 1 AND 16", name="ck_silo_linea_numero"), CheckConstraint("linea IN ('L6', 'L7')", name="ck_silo_linea_fisica"), CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_silo_linea_intervalo"), Index("ix_silo_linea_activa", "silo", "hasta"))
+
+
+class LineProductFormatPeriod(Base):
+    __tablename__ = "linea_producto_formato_periodo"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    linea: Mapped[str] = mapped_column(String(10), nullable=False)
+    producto: Mapped[str] = mapped_column(String(80), nullable=False)
+    formato: Mapped[str] = mapped_column(String(80), nullable=False)
+    desde: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hasta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    id_usuario_inicio: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    id_usuario_fin: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"))
+    __table_args__ = (CheckConstraint("linea IN ('L6', 'L7')", name="ck_linea_producto_linea"), CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_linea_producto_intervalo"), Index("ix_linea_producto_activa", "linea", "hasta"))
+
+
 class OperationalRecord(Base, Timestamped):
     __tablename__ = "registro_operativo"
     id: Mapped[uuid.UUID] = uuid_pk()

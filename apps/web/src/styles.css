@@ -22,7 +22,7 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .operational h2, .operational button { grid-column: 1 / -1; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .form-actions button { padding: 0 14px; }
-.inline-note, .thickness, .offline { grid-column: 1 / -1; }
+.inline-note, .thickness, .offline, .traceability { grid-column: 1 / -1; }
 .inline-note { margin: 0; color: #bdd1d6; }
 .thickness { border: 1px solid #4f7780; border-radius: 8px; padding: 14px; }
 .thickness h3, .press-grid h4 { margin: 0 0 10px; }
@@ -31,3 +31,6 @@ button { border: 0; background: #ffbd59; color: #152d35; cursor: pointer; font-w
 .press-grid fieldset > div { display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr)); gap: 8px; }
 .press-grid input { min-height: 40px; width: 100%; }
 .offline { border-top: 1px solid #4f7780; padding-top: 16px; }
+.traceability { border-top: 1px solid #4f7780; padding-top: 16px; }
+.traceability form { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.traceability h2 { margin-top: 0; }

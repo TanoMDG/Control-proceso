@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -249,6 +249,100 @@ class RecordActionInput(BaseModel):
 
 class ShiftReceiptInput(BaseModel):
     observacion: str | None = Field(default=None, max_length=500)
+
+
+class MuaComponentInput(BaseModel):
+    componente: str = Field(min_length=1, max_length=120)
+    referencia: str | None = Field(default=None, max_length=120)
+    observacion: str | None = Field(default=None, max_length=300)
+
+
+class MuaCreateInput(BaseModel):
+    fecha_generacion: date = Field(default_factory=date.today)
+    id_preparador: UUID
+    composicion: list[MuaComponentInput] = Field(min_length=1)
+
+
+class MuaOutput(ORMModel):
+    id: UUID
+    codigo: str
+    fecha_generacion: date
+    id_preparador: UUID
+    composicion: list[dict]
+    creado_por: UUID
+
+
+class TemporalStartInput(BaseModel):
+    desde: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TemporalCloseInput(BaseModel):
+    hasta: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MuaBoxStartInput(TemporalStartInput):
+    id_mua: UUID
+    box: str = Field(min_length=1, max_length=30)
+    certeza: str = Field(default="CONFIRMADA", pattern="^(CONFIRMADA|POTENCIAL|INFERIDA)$")
+
+
+class BoxVerdesStartInput(TemporalStartInput):
+    box: str = Field(min_length=1, max_length=30)
+
+
+class KsiderSiloStartInput(TemporalStartInput):
+    receptor: str = Field(default="K-SIDER", min_length=1, max_length=30)
+    silo: int = Field(ge=1, le=16)
+
+
+class SiloLineStartInput(TemporalStartInput):
+    silo: int = Field(ge=1, le=16)
+    linea: str = Field(pattern="^(L6|L7)$")
+
+
+class LineProductFormatStartInput(TemporalStartInput):
+    linea: str = Field(pattern="^(L6|L7)$")
+    producto: str = Field(min_length=1, max_length=80)
+    formato: str = Field(min_length=1, max_length=80)
+
+
+class TemporalPeriodOutput(ORMModel):
+    id: UUID
+    desde: datetime
+    hasta: datetime | None
+    id_usuario_inicio: UUID
+    id_usuario_fin: UUID | None
+
+
+class MuaBoxPeriodOutput(TemporalPeriodOutput):
+    id_mua: UUID
+    box: str
+    certeza: str
+
+
+class MuaListOutput(MuaOutput):
+    presencias_activas: list[MuaBoxPeriodOutput] = Field(default_factory=list)
+    orden_fifo: int | None = None
+
+
+class BoxVerdesPeriodOutput(TemporalPeriodOutput):
+    box: str
+
+
+class KsiderSiloPeriodOutput(TemporalPeriodOutput):
+    receptor: str
+    silo: int
+
+
+class SiloLinePeriodOutput(TemporalPeriodOutput):
+    silo: int
+    linea: str
+
+
+class LineProductFormatPeriodOutput(TemporalPeriodOutput):
+    linea: str
+    producto: str
+    formato: str
 
 
 class OperationalRecordOutput(ORMModel):
