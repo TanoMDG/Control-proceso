@@ -17,4 +17,10 @@ describe("offline queue contract", () => {
     const record = { ...makePending("m5-device-uuid", "m5", { id_mua: "mua-id", box: "1" }, false), route: "/trazabilidad/mua-box", method: "POST" as const };
     expect(record).toMatchObject({ module: "m5", route: "/trazabilidad/mua-box", method: "POST", status: "pendiente" });
   });
+  it("retains an M7 maintenance record and its idempotency UUID for retry", () => {
+    const payload = { client_uuid: "m7-device-uuid", id_equipo: "equipment-id", id_responsable: "person-id", campos_madirex: { observacion: "informativo" } };
+    const record = { ...makePending("m7-device-uuid", "m7", payload, false), route: "/mantenimiento/registros", method: "POST" as const };
+    expect(record).toMatchObject({ module: "m7", route: "/mantenimiento/registros", status: "pendiente" });
+    expect(record.payload).toEqual(payload);
+  });
 });

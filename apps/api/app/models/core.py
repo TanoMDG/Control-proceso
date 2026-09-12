@@ -262,6 +262,67 @@ class LineProductFormatPeriod(Base):
     __table_args__ = (CheckConstraint("linea IN ('L6', 'L7')", name="ck_linea_producto_linea"), CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_linea_producto_intervalo"), Index("ix_linea_producto_activa", "linea", "hasta"))
 
 
+class MaintenanceEquipment(Base, Timestamped):
+    __tablename__ = "equipo_mantenimiento"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(160), nullable=False)
+    sector: Mapped[str] = mapped_column(String(40), nullable=False)
+    atributos: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    fecha_baja: Mapped[date | None] = mapped_column(Date)
+    __table_args__ = (CheckConstraint("(activo = true AND fecha_baja IS NULL) OR (activo = false AND fecha_baja IS NOT NULL)", name="ck_equipo_mantenimiento_baja_logica"),)
+
+
+class MaintenanceProduct(Base, Timestamped):
+    __tablename__ = "producto_mantenimiento"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    codigo: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    descripcion: Mapped[str] = mapped_column(String(160), nullable=False)
+    activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    fecha_baja: Mapped[date | None] = mapped_column(Date)
+    __table_args__ = (CheckConstraint("(activo = true AND fecha_baja IS NULL) OR (activo = false AND fecha_baja IS NOT NULL)", name="ck_producto_mantenimiento_baja_logica"),)
+
+
+class MaintenanceProductFormatVersion(Base, Timestamped):
+    __tablename__ = "producto_formato_mantenimiento_version"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_producto: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("producto_mantenimiento.id", ondelete="RESTRICT"), nullable=False)
+    id_formato: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("catalogo.id", ondelete="RESTRICT"), nullable=False)
+    vigente_desde: Mapped[date] = mapped_column(Date, nullable=False)
+    vigente_hasta_exclusiva: Mapped[date | None] = mapped_column(Date)
+    motivo_cambio: Mapped[str] = mapped_column(String(200), nullable=False)
+    id_usuario_alta: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    __table_args__ = (CheckConstraint("vigente_hasta_exclusiva IS NULL OR vigente_hasta_exclusiva > vigente_desde", name="ck_producto_formato_mantenimiento_intervalo"), Index("ix_producto_formato_mantenimiento_vigencia", "id_producto", "id_formato", "vigente_desde"))
+
+
+class MaintenanceRecord(Base, Timestamped):
+    __tablename__ = "registro_mantenimiento"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True, nullable=False)
+    fecha_operativa: Mapped[date] = mapped_column(Date, nullable=False)
+    turno_codigo: Mapped[str] = mapped_column(String(30), nullable=False)
+    inicio: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    fin: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    id_equipo: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("equipo_mantenimiento.id", ondelete="RESTRICT"), nullable=False)
+    id_producto_formato_version: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("producto_formato_mantenimiento_version.id", ondelete="RESTRICT"))
+    id_responsable: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persona.id", ondelete="RESTRICT"), nullable=False)
+    tipo: Mapped[str] = mapped_column(String(30), nullable=False)
+    descripcion: Mapped[str] = mapped_column(Text, nullable=False)
+    campos_madirex: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    creado_por: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False)
+    __table_args__ = (CheckConstraint("fin IS NULL OR fin >= inicio", name="ck_registro_mantenimiento_intervalo"),)
+
+
+class MaintenanceCorrelation(Base):
+    __tablename__ = "correlacion_mantenimiento"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_registro_mantenimiento: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("registro_mantenimiento.id", ondelete="CASCADE"), nullable=False)
+    tipo_referencia: Mapped[str] = mapped_column(String(20), nullable=False)
+    id_referencia: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    __table_args__ = (CheckConstraint("tipo_referencia IN ('PARADA', 'DESVIO')", name="ck_correlacion_mantenimiento_tipo"), UniqueConstraint("id_registro_mantenimiento", "tipo_referencia", "id_referencia", name="uq_correlacion_mantenimiento"))
+
+
 class OperationalRecord(Base, Timestamped):
     __tablename__ = "registro_operativo"
     id: Mapped[uuid.UUID] = uuid_pk()

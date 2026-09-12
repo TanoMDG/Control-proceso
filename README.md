@@ -1,6 +1,6 @@
 # Sistema de Control de Proceso de Preparacion de Pasta
 
-Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3 y F4 estan disponibles.
+Implementacion en curso de la especificacion `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`. F0, FT, F1, F2, F3, F4 y F5 estan disponibles.
 
 ## Requisitos
 
@@ -49,7 +49,7 @@ Las advertencias de dispersion usan exclusivamente las versiones configuradas de
 
 ## Operacion Offline
 
-Los formularios F1 y F3 guardan cargas sin conexion en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicacion reintenta la sincronizacion sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Los rechazos 4xx se muestran al operador y no se encolan como si fueran recuperables. Las validaciones industriales y los conflictos de revision siguen resolviendose exclusivamente en backend.
+Los formularios F1, F3, F4 y F5 guardan cargas sin conexion en IndexedDB y conservan su `client_uuid`. Al volver la conectividad, la aplicacion reintenta la sincronizacion sin duplicar registros; expone cada cola como `pendiente`, `error` o `conflicto`. Los rechazos 4xx se muestran al operador y no se encolan como si fueran recuperables. Las validaciones industriales y los conflictos de revision siguen resolviendose exclusivamente en backend.
 
 ## Trazabilidad MUA (F4)
 
@@ -58,6 +58,14 @@ M4 registra la identidad `MUA-AAAA-MMDD-NN`, el preparador y los componentes dec
 `POST/PATCH /api/v1/trazabilidad/{mua-box,box-verdes,ksider-silo,silo-linea}` y `POST/PATCH /api/v1/lineas/{linea}/producto-formato` retienen inicio, fin y usuario. Los cambios de box a Verdes, receptor K-Sider y producto/formato cierran el periodo activo anterior. `GET /api/v1/mua/{id}/trazabilidad` devuelve la secuencia cronologica con certeza `CONFIRMADA`, `POTENCIAL` o `INFERIDA`.
 
 La web expone M4/M5 y conserva en IndexedDB las presencias MUA-box que no puedan sincronizarse, con el endpoint y payload originales.
+
+## Mantenimiento (F5)
+
+M7 registra intervenciones de mantenimiento con equipo, responsable, tipo, intervalo, producto/formato vigente opcional y correlaciones explicitas a M6 y desvíos mediante `POST /api/v1/registros/m7` (tambien disponible como `/api/v1/mantenimiento/registros`). Los equipos y productos se administran mediante `/api/v1/mantenimiento/equipos` y `/api/v1/mantenimiento/productos`; los formatos son relaciones versionadas por producto y fecha. Los campos Madirex se retienen como informacion y no generan limites ni desvíos automaticos.
+
+`Pendiente de configuracion: no hay responsables de mantenimiento configurados.`
+
+La interfaz muestra esa sentencia y deshabilita el alta M7 hasta que ADMIN configure una persona activa con el puesto vigente `Mantenimiento`. El backend aplica el mismo filtro para impedir responsables no configurados.
 
 ## Pruebas
 

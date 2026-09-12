@@ -345,6 +345,107 @@ class LineProductFormatPeriodOutput(TemporalPeriodOutput):
     formato: str
 
 
+class MaintenanceEquipmentInput(BaseModel):
+    codigo: str = Field(min_length=1, max_length=40)
+    descripcion: str = Field(min_length=1, max_length=160)
+    sector: str = Field(min_length=1, max_length=40)
+    atributos: dict = Field(default_factory=dict)
+
+
+class MaintenanceEquipmentPatch(BaseModel):
+    descripcion: str | None = Field(default=None, min_length=1, max_length=160)
+    sector: str | None = Field(default=None, min_length=1, max_length=40)
+    atributos: dict | None = None
+    activo: bool | None = None
+    fecha_baja: date | None = None
+
+
+class MaintenanceEquipmentOutput(ORMModel):
+    id: UUID
+    codigo: str
+    descripcion: str
+    sector: str
+    atributos: dict
+    activo: bool
+    fecha_baja: date | None
+
+
+class MaintenanceProductInput(BaseModel):
+    codigo: str = Field(min_length=1, max_length=40)
+    descripcion: str = Field(min_length=1, max_length=160)
+
+
+class MaintenanceProductPatch(BaseModel):
+    descripcion: str | None = Field(default=None, min_length=1, max_length=160)
+    activo: bool | None = None
+    fecha_baja: date | None = None
+
+
+class MaintenanceProductOutput(ORMModel):
+    id: UUID
+    codigo: str
+    descripcion: str
+    activo: bool
+    fecha_baja: date | None
+
+
+class MaintenanceProductFormatVersionInput(BaseModel):
+    id_formato: UUID
+    vigente_desde: date
+    vigente_hasta_exclusiva: date | None = None
+    motivo_cambio: str = Field(min_length=1, max_length=200)
+
+
+class MaintenanceProductFormatVersionOutput(ORMModel):
+    id: UUID
+    id_producto: UUID
+    id_formato: UUID
+    vigente_desde: date
+    vigente_hasta_exclusiva: date | None
+    motivo_cambio: str
+    id_usuario_alta: UUID
+
+
+class MaintenanceRecordInput(BaseModel):
+    client_uuid: UUID = Field(default_factory=uuid4)
+    fecha_operativa: date
+    turno_codigo: str = Field(min_length=1, max_length=30)
+    inicio: datetime
+    fin: datetime | None = None
+    id_equipo: UUID
+    id_responsable: UUID
+    tipo: str = Field(min_length=1, max_length=30)
+    descripcion: str = Field(min_length=1, max_length=2000)
+    id_producto_formato_version: UUID | None = None
+    id_producto: UUID | None = None
+    id_formato: UUID | None = None
+    campos_madirex: dict = Field(default_factory=dict)
+    ids_paradas: list[UUID] = Field(default_factory=list)
+    ids_desvios: list[UUID] = Field(default_factory=list)
+
+
+class MaintenanceCorrelationOutput(ORMModel):
+    tipo_referencia: str
+    id_referencia: UUID
+
+
+class MaintenanceRecordOutput(ORMModel):
+    id: UUID
+    client_uuid: UUID
+    fecha_operativa: date
+    turno_codigo: str
+    inicio: datetime
+    fin: datetime | None
+    id_equipo: UUID
+    id_producto_formato_version: UUID | None
+    id_responsable: UUID
+    tipo: str
+    descripcion: str
+    campos_madirex: dict
+    creado_por: UUID
+    correlaciones: list[MaintenanceCorrelationOutput]
+
+
 class OperationalRecordOutput(ORMModel):
     id: UUID
     modulo: str

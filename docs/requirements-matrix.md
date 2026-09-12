@@ -97,6 +97,20 @@ The status is a roadmap classification from section 11, not evidence that an acc
 
 F0 coverage is limited to the foundational requirements identified in section 11. A later operational acceptance case with an implemented F0 dependency is marked `STRUCTURALLY COVERED (F0); acceptance PLANNED (Fx)`; it is never presented as an executed later-phase acceptance test. F9 has no CP01-CP70 acceptance case in section 14.
 
+## F5 M7 Delivery Matrix
+
+| Requirement | Implementation | Verification | Status |
+|---|---|---|---|
+| Maintenance intervention record | `registro_mantenimiento` preserves the idempotency UUID, equipment, responsible, interval, type, description and Madirex information. | `test_f5_maintenance.py` creates and retries M7. | IMPLEMENTED (F5) |
+| Equipment and product masters | `equipo_mantenimiento` and `producto_mantenimiento` are ADMIN-configured, logically deactivated and audited. | `test_f5_maintenance.py` creates configured masters. | IMPLEMENTED (F5) |
+| Product-format history | `producto_formato_mantenimiento_version` uses non-overlapping `[desde, hasta)` validity and M7 keeps the selected version ID. | `test_f5_maintenance.py` rejects an overlap and saves the version. | IMPLEMENTED (F5) |
+| Responsible selection | Active people are filtered by an effective `Mantenimiento` position; no M7 record can name an unconfigured responsible. | `test_f5_maintenance.py` covers empty and configured lists. | IMPLEMENTED (F5) |
+| Madirex | `campos_madirex` is informational only: it is retained and never evaluates a limit or creates a deviation. | M7 API audit reason and acceptance test. | IMPLEMENTED (F5) |
+| Stop/deviation correlation and analytics | `correlacion_mantenimiento` references existing M6 records and deviation events; rebuilt analytics includes intervention, duration and correlation metrics. | `test_f5_maintenance.py` rebuilds and reads M7 facts. | IMPLEMENTED (F5) |
+| Offline M7 | The browser queues `POST /mantenimiento/registros` with its original client UUID. | `offline.test.ts`. | IMPLEMENTED (F5) |
+
+`Pendiente de configuracion: no hay responsables de mantenimiento configurados.`
+
 ## F0 Master Data Import
 
 | Requirement | Source | Result | Status |
