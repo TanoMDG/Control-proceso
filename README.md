@@ -117,3 +117,9 @@ La validacion es dry-run: no importa ni modifica datos. Consulte `docs/data-impo
 ## Entornos Y Seguridad
 
 Use archivos `.env` diferentes para desarrollo, prueba y produccion. `POSTGRES_PASSWORD`, `POSTGRES_TEST_PASSWORD`, `DATABASE_URL`, `JWT_SECRET` y `TEST_JWT_SECRET` son obligatorios en Compose; `.env.example` contiene solo marcadores que deben reemplazarse. La API y la web se ejecutan sin privilegios, con filesystem de solo lectura, sin capacidades Linux adicionales y sin secretos por defecto. Produccion debe configurar HTTPS, respaldos, RPO/RTO, expiracion de sesion/PIN y MFA de ADMIN conforme a la politica de Soporte, que la especificacion deja pendiente.
+
+## v1.0.0: Configuracion Productiva Pendiente
+
+La operacion manual de v1.0.0 esta disponible sin commissioning PLC. Antes del despliegue productivo deben configurarse, sin modificar el software, los responsables reales de mantenimiento, la identificacion definitiva del molinillo de rechazo, maestros, limites, frecuencias y mallas de laboratorio, relaciones producto-formato y calendario/parametros operativos reales.
+
+El commissioning PLC de solo lectura tambien permanece pendiente: red, protocolo, tags, escalas, unidades, frecuencias, calidad y autorizacion de lectura. Las politicas corporativas de despliegue, respaldo, continuidad y seguridad son responsabilidades organizacionales de produccion. Ninguno de estos puntos invalida los flujos manuales de v1.0.0.
