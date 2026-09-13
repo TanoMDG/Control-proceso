@@ -83,10 +83,27 @@ test("real credentials expose role and remote navigation boundaries", async ({ p
   await directContext.close();
 });
 
+test("M1 offers only consumable boxes and surfaces the D01 warning flow", async ({ page }) => {
+  await login(page, "e2e-molienda");
+  await operation(page);
+  const box = page.getByLabel("Box activo (1, 2, 3 o 6)");
+  await expect(box.locator("option")).toHaveText(["Seleccione box", "1", "2", "3", "6"]);
+  await box.selectOption("6");
+  await page.getByLabel("Humedad Verdes").fill("4.1");
+  await page.getByLabel("Residuo").fill("1.7");
+  await page.getByLabel("Aeroseparador").fill("3.2");
+  await page.getByRole("button", { name: "Guardar M1" }).click();
+  await expect(page.getByText("Advertencia D01 abierto.")).toBeVisible();
+  await page.getByRole("button", { name: "Actualizar historial" }).click();
+  page.once("dialog", (dialog) => dialog.accept("Cierre M1 E2E"));
+  await page.getByRole("button", { name: "Cerrar", exact: true }).first().click();
+  await expect(page.getByText("Registro cerrar.")).toBeVisible();
+});
+
 test("supervision persists deviation lifecycle, correction audit, conflict, and dashboard data", async ({ page, browser }) => {
   await login(page, "e2e-molienda");
   await operation(page);
-  await page.getByLabel("Box activo (1, 2, 3 o 6)").fill("6");
+  await page.getByLabel("Box activo (1, 2, 3 o 6)").selectOption("6");
   await page.getByLabel("Humedad Verdes").fill("4.1");
   await page.getByLabel("Residuo").fill("1.7");
   await page.getByLabel("Aeroseparador").fill("3.2");
@@ -155,7 +172,7 @@ test("administration persists master, limit, calendar, and PLC configuration", a
 test("M1, M2, M3, and M6 persist through the molienda UI", async ({ page }) => {
   await login(page, "e2e-molienda");
   await operation(page);
-  await page.getByLabel("Box activo (1, 2, 3 o 6)").fill("1");
+  await page.getByLabel("Box activo (1, 2, 3 o 6)").selectOption("1");
   await page.getByLabel("Humedad Verdes").fill("2.8");
   await page.getByLabel("Residuo").fill("1.2");
   await page.getByLabel("Aeroseparador").fill("3.4");
@@ -191,9 +208,30 @@ test("M8, M9, and M10 persist through the prensas UI", async ({ page }) => {
   await page.getByLabel("Prensa").fill("PH Siti");
   await page.getByLabel("Causa de vaciado").fill("Limpieza E2E");
   await page.getByLabel("Duracion (min)").fill("10");
+  await expect(page.getByLabel("Crear parada M6 asociada")).not.toBeChecked();
   await save(page, "M8");
+  let m8 = await authenticatedRequest<Array<{ id: string; datos: Record<string, string> }>>(page, "/registros/m8");
+  const withoutStop = m8.body.find((record) => record.datos.causa_vaciado === "Limpieza E2E");
+  expect(withoutStop?.datos.id_parada_asociada).toBeUndefined();
 
+  await page.getByLabel("Linea (L6 o L7)").fill("L6");
+  await page.getByLabel("Prensa").fill("PH Siti");
+  await page.getByLabel("Causa de vaciado").fill("Limpieza E2E con parada");
+  await page.getByLabel("Duracion (min)").fill("10");
+  await page.getByLabel("Crear parada M6 asociada").check();
+  await save(page, "M8");
+  m8 = await authenticatedRequest<Array<{ id: string; datos: Record<string, string> }>>(page, "/registros/m8");
+  const withStop = m8.body.find((record) => record.datos.causa_vaciado === "Limpieza E2E con parada");
+  expect(withStop?.datos.id_parada_asociada).toBeTruthy();
+  await page.getByRole("button", { name: "Cerrar sesion" }).click();
+  await login(page, "e2e-admin");
+  const stops = await authenticatedRequest<Array<{ id: string; datos: Record<string, string> }>>(page, "/registros/m6");
+  expect(stops.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: withStop?.datos.id_parada_asociada, datos: expect.objectContaining({ id_m8_asociado: withStop?.id }) })]));
+  await page.getByRole("button", { name: "Cerrar sesion" }).click();
+  await login(page, "e2e-prensas");
+  await operation(page);
   await page.getByLabel("Modulo").selectOption("M9");
+
   await page.getByLabel("Linea (L6 o L7)").fill("L6");
   await page.getByLabel("Prensa").fill("PH Siti");
   await page.getByLabel("Codigo de formato").fill("E2E-64X64");
@@ -248,12 +286,39 @@ test("M4, M5, M7, and M17 use persisted test masters", async ({ page }) => {
   await expect(page.getByText("P21 registrado con determinaciones configuradas.")).toBeVisible();
 });
 
+test("CP24 hides a deactivated M4 preparer while retaining the historical trace", async ({ page }) => {
+  const preparerName = "Palero historico CP24 E2E";
+  await login(page, "e2e-admin");
+  const person = await authenticatedRequest<{ id: string }>(page, "/personas", "POST", { legajo: "E2E-CP24-PALERO", apellido_nombre: preparerName });
+  expect(person.status).toBe(201);
+  expect((await authenticatedRequest(page, `/personas/${person.body.id}/puestos`, "POST", { puesto: "Palero", vigente_desde: "2020-01-01" })).status).toBe(201);
+
+  await page.getByRole("navigation", { name: "Navegacion principal" }).getByRole("button", { name: "Trazabilidad" }).click();
+  await page.getByRole("button", { name: "Actualizar MUA y FIFO" }).click();
+  const preparer = page.getByLabel("Preparador M4");
+  await expect(preparer.getByRole("option", { name: preparerName, exact: true })).toHaveCount(1);
+  await preparer.selectOption(person.body.id);
+  await page.getByLabel("Componente").fill("Arcilla CP24 E2E");
+  await page.getByRole("button", { name: "Crear MUA" }).click();
+  await expect(page.getByText("M4 registrado con identidad MUA.")).toBeVisible();
+  const muas = await authenticatedRequest<Array<{ id: string; codigo: string; id_preparador: string }>>(page, "/mua");
+  const mua = muas.body.find((item) => item.id_preparador === person.body.id);
+  expect(mua).toBeTruthy();
+
+  expect((await authenticatedRequest(page, `/personas/${person.body.id}`, "PATCH", { activo: false, fecha_baja: new Date().toISOString().slice(0, 10) })).status).toBe(200);
+  await page.getByRole("button", { name: "Actualizar MUA y FIFO" }).click();
+  await expect(preparer.getByRole("option", { name: preparerName, exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: `Ver trazabilidad ${mua!.codigo}` }).click();
+  await expect(page.getByRole("heading", { name: `Trazabilidad historica ${mua!.codigo}` })).toBeVisible();
+  await expect(page.getByText(`Preparador M4: ${preparerName}`)).toBeVisible();
+});
+
 test("offline IndexedDB survives reload, reconnects, and retries idempotently", async ({ page, context }) => {
   await login(page, "e2e-molienda");
   await operation(page);
   await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
   await context.setOffline(true);
-  await page.getByLabel("Box activo (1, 2, 3 o 6)").fill("2");
+  await page.getByLabel("Box activo (1, 2, 3 o 6)").selectOption("2");
   await page.getByLabel("Humedad Verdes").fill("2.7");
   await page.getByLabel("Residuo").fill("1.1");
   await page.getByLabel("Aeroseparador").fill("3.3");
@@ -275,6 +340,30 @@ test("offline IndexedDB survives reload, reconnects, and retries idempotently", 
   await expect(page.getByText('"2.7"')).toHaveCount(1);
 });
 
+test("CP60 offline out-of-range M1 retry creates one D01 event", async ({ page, context }) => {
+  await login(page, "e2e-molienda");
+  await operation(page);
+  await expect(page.getByLabel("Box activo (1, 2, 3 o 6)")).toHaveCount(1);
+  await context.setOffline(true);
+  await page.getByLabel("Box activo (1, 2, 3 o 6)").selectOption("6");
+  await page.getByLabel("Humedad Verdes").fill("4.4");
+  await page.getByLabel("Residuo").fill("1.1");
+  await page.getByLabel("Aeroseparador").fill("3.3");
+  await page.getByRole("button", { name: "Guardar M1" }).click();
+  await expect(page.getByText("M1 quedo en cola local.")).toBeVisible();
+  await context.setOffline(false);
+  await page.getByRole("button", { name: "Sincronizar pendientes" }).click();
+  await expect(page.getByText("0 carga(s) pendiente(s)")).toBeVisible();
+  const records = await authenticatedRequest<Array<{ id: string; datos: Record<string, unknown> }>>(page, "/registros/m1");
+  const retried = records.body.find((record) => String(record.datos.humedad_verdes) === "4.4" && String(record.datos.box_activo) === "6");
+  expect(retried).toBeTruthy();
+  const once = (await authenticatedRequest<Array<{ id_registro: string; id_desvio: string }>>(page, "/desvios")).body.filter((event) => event.id_registro === retried!.id && event.id_desvio === "D01");
+  expect(once).toHaveLength(1);
+  await page.getByRole("button", { name: "Sincronizar pendientes" }).click();
+  const retriedAgain = (await authenticatedRequest<Array<{ id_registro: string; id_desvio: string }>>(page, "/desvios")).body.filter((event) => event.id_registro === retried!.id && event.id_desvio === "D01");
+  expect(retriedAgain).toHaveLength(1);
+});
+
 test("two real sessions create a persisted stale-revision conflict", async ({ browser }) => {
   const first = await browser.newContext();
   const second = await browser.newContext();
@@ -282,7 +371,7 @@ test("two real sessions create a persisted stale-revision conflict", async ({ br
   const pageB = await second.newPage();
   await login(pageA, "e2e-molienda");
   await operation(pageA);
-  await pageA.getByLabel("Box activo (1, 2, 3 o 6)").fill("3");
+  await pageA.getByLabel("Box activo (1, 2, 3 o 6)").selectOption("3");
   await pageA.getByLabel("Humedad Verdes").fill("2.6");
   await pageA.getByLabel("Residuo").fill("1.3");
   await pageA.getByLabel("Aeroseparador").fill("3.5");

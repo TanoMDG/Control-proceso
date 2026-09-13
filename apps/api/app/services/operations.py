@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from app.models.core import AppliedLimit, Catalog, DeviationEvent, DeviationHistory, LimitVersion, OperationalRecord, ReactionPlan, SiloScale, SiloScalePoint
+from app.models.core import AppliedLimit, Catalog, DeviationEvent, DeviationHistory, LimitVersion, LineProductFormatPeriod, OperationalRecord, ReactionPlan, SiloScale, SiloScalePoint
 from app.services.limits import evaluate_limit
 
 MODULE_SECTOR = {"M1": "Molienda", "M2": "Molienda", "M3": "Molienda", "M6": "Molienda", "M8": "Prensas", "M9": "Prensas", "M10": "Prensas"}
@@ -75,9 +75,13 @@ def selected_format(db: Session, code: str) -> tuple[Catalog, Decimal, Decimal]:
     return item, nominal, tolerance
 
 
-def normalized_data(db: Session, module: str, source: dict, operational_date) -> dict:
+def normalized_data(db: Session, module: str, source: dict, operational_date, measured_at: datetime | None = None) -> dict:
     data = dict(source)
     if module == "M1":
+        if data.get("tipo_registro") == "resumen_turno":
+            data["toneladas_procesadas"] = str(decimal_value(data, "toneladas_procesadas"))
+            data["horas_marcha"] = str(decimal_value(data, "horas_marcha"))
+            return data
         box = data.get("box_activo")
         if box not in {1, 2, 3, 6, "1", "2", "3", "6"}:
             raise HTTPException(status_code=422, detail="box_activo solo admite 1, 2, 3 o 6")
@@ -145,6 +149,10 @@ def normalized_data(db: Session, module: str, source: dict, operational_date) ->
         data.update({"linea": line, "prensa": validate_press_line(db, line, data.get("prensa")), "formato": format_item.codigo, "formato_aplicado": {"codigo": format_item.codigo, "espesor_nominal_mm": str(nominal), "tolerancia_mm": str(tolerance)}})
         for field in ("humedad_pasta", "presion", "humedad_residual"):
             data[field] = str(decimal_value(data, field))
+        if measured_at is not None:
+            period = db.scalar(select(LineProductFormatPeriod).where(LineProductFormatPeriod.linea == line, LineProductFormatPeriod.desde <= measured_at, LineProductFormatPeriod.hasta.is_(None) | (LineProductFormatPeriod.hasta > measured_at)).order_by(LineProductFormatPeriod.desde.desc()))
+            if period is not None:
+                data["producto_formato_linea"] = {"producto": period.producto, "formato": period.formato, "desde": period.desde.isoformat()}
     elif module == "M10":
         line = normalized_line(data.get("linea"))
         format_item, nominal, tolerance = selected_format(db, data.get("formato"))
@@ -199,6 +207,8 @@ def normalized_data(db: Session, module: str, source: dict, operational_date) ->
 
 
 def evaluate_record(db: Session, record: OperationalRecord, actor_id) -> None:
+    if record.modulo == "M1" and record.datos.get("tipo_registro") == "resumen_turno":
+        return
     fields = LIMIT_FIELDS.get(record.modulo, {})
     if record.modulo == "M3":
         kind = record.datos.get("tipo_registro")

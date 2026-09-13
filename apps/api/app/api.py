@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import HTMLResponse
@@ -518,7 +518,7 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     existing = db.scalar(select(OperationalRecord).where(OperationalRecord.modulo == module, OperationalRecord.client_uuid == payload.client_uuid))
     if existing is not None:
         return existing
-    data = normalized_data(db, module, payload.datos, payload.fecha_operativa)
+    data = normalized_data(db, module, payload.datos, payload.fecha_operativa, payload.instante_medicion)
     if module == "M1" and data.get("tipo_registro") == "resumen_turno":
         summaries = db.scalars(select(OperationalRecord).where(OperationalRecord.modulo == "M1", OperationalRecord.fecha_operativa == payload.fecha_operativa, OperationalRecord.turno_codigo == payload.turno_codigo, OperationalRecord.sector == sector))
         if any(row.datos.get("tipo_registro") == "resumen_turno" for row in summaries):
@@ -538,6 +538,18 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     )
     db.add(record)
     db.flush()
+    if module == "M8" and payload.crear_parada_asociada:
+        duration = float(record.datos["duracion_min"])
+        stop = OperationalRecord(
+            modulo="M6", sector=sector, client_uuid=uuid4(), estado="BORRADOR", origen_dato=record.origen_dato,
+            fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_medicion=record.instante_medicion,
+            id_responsable=record.id_responsable, creado_por=actor.id,
+            datos={"causa": "VACIADO_TOLVA", "descripcion": f"Parada asociada a M8 {record.id}", "inicio": record.instante_medicion.isoformat(), "fin": (record.instante_medicion + timedelta(minutes=duration)).isoformat(), "duracion_calculada_horas": str(duration / 60), "id_m8_asociado": str(record.id)},
+        )
+        db.add(stop)
+        db.flush()
+        record.datos = {**record.datos, "id_parada_asociada": str(stop.id)}
+        write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(stop.id), action="ALTA", after=audit_payload(stop), reason="Parada asociada al vaciado de tolva M8")
     evaluate_record(db, record, actor.id)
     record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": record.revision, "datos": record.datos}, server_version={"revision": record.revision, "estado": record.estado}, record_closed=False)
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="DIGITACION_PAPEL" if payload.origen_dato == "papel_digitado" else "ALTA", after=audit_payload(record), reason="Carga diferida desde formulario en papel" if payload.origen_dato == "papel_digitado" else None)
@@ -580,13 +592,15 @@ def correct_record(modulo: str, record_id: UUID, payload: RecordUpdateInput, act
     before = audit_payload(record)
     previous_burner = record.datos.get("temperatura_quemador")
     requested_burner = payload.datos.get("temperatura_quemador")
+    burner_change_reason = None
     if previous_burner is not None and requested_burner is not None and str(previous_burner) != str(requested_burner):
         if payload.datos.get("temperatura_quemador_previa") != previous_burner or not payload.datos.get("motivo_cambio_quemador"):
             raise HTTPException(status_code=422, detail="El cambio de quemador requiere valor previo y motivo")
-    record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa), payload.motivo_correccion, record.revision + 1
+        burner_change_reason = payload.datos["motivo_cambio_quemador"]
+    record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa, record.instante_medicion), payload.motivo_correccion, record.revision + 1
     evaluate_record(db, record, actor.id)
     record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": payload.revision, "datos": payload.datos}, server_version={"revision": record.revision, "estado": record.estado, "datos": record.datos}, record_closed=False)
-    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion or burner_change_reason)
     db.commit(); db.refresh(record); return record
 
 
@@ -1022,6 +1036,7 @@ def mua_traceability(mua_id: UUID, actor: User = Depends(current_user), db: Sess
     mua = db.get(MUA, mua_id)
     if mua is None:
         raise HTTPException(status_code=404, detail="MUA inexistente")
+    preparer = db.get(Person, mua.id_preparador)
     edges: list[dict] = []
     presences = list(db.scalars(select(MuaBoxPresence).where(MuaBoxPresence.id_mua == mua.id).order_by(MuaBoxPresence.desde)))
     for presence in presences:
@@ -1037,7 +1052,7 @@ def mua_traceability(mua_id: UUID, actor: User = Depends(current_user), db: Sess
                     edges.append({"relacion": "SILO->LINEA", "origen": f"SILO-{ksider.silo}", "destino": silo_line.linea, "desde": silo_line.desde, "hasta": silo_line.hasta, "certeza": "INFERIDA", "id_periodo": str(silo_line.id)})
                     products = [row for row in db.scalars(select(LineProductFormatPeriod).where(LineProductFormatPeriod.linea == silo_line.linea)) if overlaps(silo_line.desde, silo_line.hasta, row.desde, row.hasta)]
                     edges.extend({"relacion": "LINEA->PRODUCTO_FORMATO", "origen": silo_line.linea, "destino": f"{row.producto} / {row.formato}", "desde": row.desde, "hasta": row.hasta, "certeza": "INFERIDA", "id_periodo": str(row.id)} for row in products)
-    return {"mua": {"id": str(mua.id), "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": str(mua.id_preparador), "composicion": mua.composicion}, "aristas": sorted(edges, key=lambda edge: edge["desde"]), "sin_proporciones_inventadas": True}
+    return {"mua": {"id": str(mua.id), "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": str(mua.id_preparador), "preparador": {"id": str(preparer.id), "apellido_nombre": preparer.apellido_nombre, "activo": preparer.activo}, "composicion": mua.composicion}, "aristas": sorted(edges, key=lambda edge: edge["desde"]), "sin_proporciones_inventadas": True}
 
 
 @router.post("/analitica/recalcular", response_model=AnalyticsRebuildOutput)
