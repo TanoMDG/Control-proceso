@@ -1,32 +1,56 @@
-import { describe, expect, it } from "vitest";
-import { makePending } from "./offline";
+import "fake-indexeddb/auto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listPending, makePending, removePending, savePending, synchronize } from "./offline";
 
-describe("offline queue contract", () => {
-  it("preserves client UUID and marks disconnected records pending", () => {
-    const record = makePending("device-uuid", "m1", { client_uuid: "device-uuid" }, false);
-    expect(record).toMatchObject({ id: "device-uuid", module: "m1", status: "pendiente" });
+function resetDatabase() {
+  return new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase("control-procesos-offline");
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
   });
-  it("surfaces failed online synchronization", () => {
-    expect(makePending("id", "m2", {}, true, "422").status).toBe("error");
+}
+
+describe("offline queue", () => {
+  beforeEach(async () => { await resetDatabase(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("persists the original endpoint, method, and client UUID in IndexedDB", async () => {
+    const record = { ...makePending("device-uuid", "m17", { client_uuid: "device-uuid" }), route: "/laboratorio/analisis", method: "POST" as const };
+    await savePending(record);
+    await expect(listPending()).resolves.toEqual([record]);
+    await removePending(record.id);
+    await expect(listPending()).resolves.toEqual([]);
   });
-  it("keeps an M10 grid payload idempotent while offline", () => {
-    const payload = { client_uuid: "m10-device-uuid", datos: { linea: "L7", detalles: [{ prensa: "PH5000-1", cavidad: 1, sector: 1, espesor_mm: "7.10" }] } };
-    expect(makePending("m10-device-uuid", "m10", payload, false).payload).toEqual(payload);
+
+  it("synchronizes a pending revision to its original PUT endpoint", async () => {
+    const record = { ...makePending("device-uuid", "m1", { client_uuid: "device-uuid", revision: 2 }), route: "/registros/m1/record-id", method: "PUT" as const };
+    await savePending(record);
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await synchronize("token", "https://api.example/api/v1");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.example/api/v1/registros/m1/record-id", expect.objectContaining({ method: "PUT" }));
+    await expect(listPending()).resolves.toEqual([]);
   });
-  it("retains an F4 temporal endpoint for offline retry", () => {
-    const record = { ...makePending("m5-device-uuid", "m5", { id_mua: "mua-id", box: "1" }, false), route: "/trazabilidad/mua-box", method: "POST" as const };
-    expect(record).toMatchObject({ module: "m5", route: "/trazabilidad/mua-box", method: "POST", status: "pendiente" });
+
+  it("keeps conflicts for supervisor resolution and does not retry them", async () => {
+    const record = makePending("device-uuid", "m1", { client_uuid: "device-uuid" });
+    await savePending(record);
+    const fetchMock = vi.fn().mockResolvedValue(new Response("conflict", { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await synchronize("token", "https://api.example/api/v1");
+    await synchronize("token", "https://api.example/api/v1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(listPending()).resolves.toEqual([{ ...record, status: "conflicto", error: "conflict" }]);
   });
-  it("retains an M7 maintenance record and its idempotency UUID for retry", () => {
-    const payload = { client_uuid: "m7-device-uuid", id_equipo: "equipment-id", id_responsable: "person-id", campos_madirex: { observacion: "informativo" } };
-    const record = { ...makePending("m7-device-uuid", "m7", payload, false), route: "/mantenimiento/registros", method: "POST" as const };
-    expect(record).toMatchObject({ module: "m7", route: "/mantenimiento/registros", status: "pendiente" });
-    expect(record.payload).toEqual(payload);
-  });
-  it("retains an M17 laboratory analysis and its configured result payload for retry", () => {
-    const payload = { client_uuid: "m17-device-uuid", id_punto: "point-id", resultados: [{ id_configuracion: "humidity-config", valor: "2.8" }] };
-    const record = { ...makePending("m17-device-uuid", "m17", payload, false), route: "/laboratorio/analisis", method: "POST" as const };
-    expect(record).toMatchObject({ module: "m17", route: "/laboratorio/analisis", status: "pendiente" });
-    expect(record.payload).toEqual(payload);
+
+  it("marks client validation failures as errors instead of recoverable retries", async () => {
+    const record = makePending("device-uuid", "m1", { client_uuid: "device-uuid" });
+    await savePending(record);
+    const fetchMock = vi.fn().mockResolvedValue(new Response("invalid", { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await synchronize("token", "https://api.example/api/v1");
+    await synchronize("token", "https://api.example/api/v1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(listPending()).resolves.toEqual([{ ...record, status: "error", error: "invalid" }]);
   });
 });

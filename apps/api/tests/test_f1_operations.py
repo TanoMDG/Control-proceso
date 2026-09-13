@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
 from app.db.session import SessionLocal
-from app.models.core import DeviationEvent, Limit, LimitVersion, ReactionPlan, SiloScale, SiloScalePoint, User
+from app.models.core import DeviationEvent, Limit, LimitVersion, ReactionPlan, SiloScale, SiloScalePoint, SyncConflict, SyncRevision, User
 from tests.conftest import auth
 
 
@@ -40,6 +40,39 @@ def test_m1_limits_deviations_consecutivity_and_lifecycle(client, admin_token):
     assert client.post(f"/api/v1/desvios/{event_id}/verificar", headers=auth(token), json={"comentario": "Verificado"}).status_code == 200
     assert client.post(f"/api/v1/desvios/{event_id}/cerrar", headers=auth(token), json={"comentario": "No permitido"}).status_code == 422
     assert client.post(f"/api/v1/desvios/{event_id}/cerrar", headers=auth(admin_token), json={"comentario": "Cierre supervisor"}).json()["estado"] == "CERRADO"
+
+
+def test_in_range_measurement_resets_consecutive_deviation_sequence(client, admin_token):
+    person, token = carga_token(client, admin_token); seed_humidity_limit()
+    for humidity, hour in (("4.1", 8), ("2.8", 9), ("4.2", 10)):
+        assert client.post("/api/v1/registros/m1", headers=auth(token), json=m1_payload(person["id"], humidity, hour)).status_code == 201
+    with SessionLocal() as db:
+        events = db.query(DeviationEvent).order_by(DeviationEvent.created_at).all()
+        assert [event.estado for event in events] == ["ABIERTO", "ABIERTO"]
+
+
+def test_invalidated_deviation_is_visible_but_excluded_from_real_kpi(client, admin_token):
+    person, token = carga_token(client, admin_token); seed_humidity_limit()
+    created = client.post("/api/v1/registros/m1", headers=auth(token), json=m1_payload(person["id"], "4.1", 8)).json()
+    corrected = client.put(f"/api/v1/registros/m1/{created['id']}", headers=auth(admin_token), json={"revision": created["revision"], "motivo_correccion": "Lectura corregida", "datos": {**created["datos"], "humedad_verdes": "2.8"}})
+    assert corrected.status_code == 200, corrected.text
+    assert client.post("/api/v1/analitica/recalcular", headers=auth(admin_token)).status_code == 200
+    fact = client.get("/api/v1/kpi", headers=auth(admin_token)).json()["hechos"][0]["metricas"]
+    assert fact["desvios_por_estado"] == {"INVALIDADO": 1}
+    assert fact["desvios_reales"] == 0
+
+
+def test_closed_record_stale_revision_creates_one_sync_conflict(client, admin_token):
+    person, token = carga_token(client, admin_token); seed_humidity_limit()
+    created = client.post("/api/v1/registros/m1", headers=auth(token), json=m1_payload(person["id"], "4.1", 8)).json()
+    assert client.post(f"/api/v1/registros/m1/{created['id']}/cerrar", headers=auth(token), json={"comentario": "Cierre"}).status_code == 200
+    payload = {"revision": created["revision"], "datos": created["datos"]}
+    for _ in range(2):
+        response = client.put(f"/api/v1/registros/m1/{created['id']}", headers=auth(token), json=payload)
+        assert response.status_code == 409
+    with SessionLocal() as db:
+        assert db.query(SyncRevision).filter_by(tabla="registro_operativo").count() == 2
+        assert db.query(SyncConflict).filter_by(tabla="registro_operativo", estado="ABIERTO").count() == 1
 
 
 def test_m2_dosage_and_stoppage_rules(client, admin_token):

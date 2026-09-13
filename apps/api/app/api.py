@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import HTMLResponse
@@ -19,9 +19,10 @@ from app.services.operations import MODULE_SECTOR, evaluate_record, normalized_d
 from app.services.analytics import rebuild_analytics
 from app.services.plc import acquire_test_samples
 from app.services.laboratory import PENDING_CONFIGURATION, agenda as laboratory_agenda, analysis_output, store_analysis
-from app.services.security import current_user, hash_password, make_token, require_admin, require_permission, verify_password
+from app.services.security import current_user, hash_password, make_token, permission_scopes, require_admin, require_permission, restrict_remote_request, verify_password
+from app.services.synchronization import record_conflict, record_revision
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(restrict_remote_request)])
 MAINTENANCE_RESPONSIBLES_PENDING = "Pendiente de configuracion: no hay responsables de mantenimiento configurados."
 
 
@@ -83,7 +84,26 @@ def assert_record_access(db: Session, actor: User, sector: str, *, write: bool =
         raise HTTPException(status_code=403, detail="CARGA solo escribe su sector")
 
 
-def assert_traceability_access(db: Session, actor: User, *, create_mua: bool = False, read: bool = False) -> None:
+def assert_carga_history_scope(db: Session, actor: User, desde: date | None, hasta: date | None) -> None:
+    if get_role(db, actor).nombre != "CARGA":
+        return
+    lower, today = date.today() - timedelta(days=6), date.today()
+    if (desde and not lower <= desde <= today) or (hasta and not lower <= hasta <= today):
+        raise HTTPException(status_code=403, detail="CARGA solo consulta el turno actual y los ultimos siete dias")
+
+
+def is_effective_palero(db: Session, person_id: UUID, on_date: date) -> bool:
+    return db.scalar(
+        select(PersonPosition.id).where(
+            PersonPosition.id_persona == person_id,
+            func.lower(PersonPosition.puesto) == "palero",
+            PersonPosition.vigente_desde <= on_date,
+            or_(PersonPosition.vigente_hasta.is_(None), PersonPosition.vigente_hasta > on_date),
+        )
+    ) is not None
+
+
+def assert_traceability_access(db: Session, actor: User, *, create_mua: bool = False, read: bool = False, requires_palero: bool = False, on_date: date | None = None, carga_sectors: set[str] | None = None) -> None:
     role = get_role(db, actor).nombre
     if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}:
         raise HTTPException(status_code=403, detail="Permiso de trazabilidad insuficiente")
@@ -91,6 +111,10 @@ def assert_traceability_access(db: Session, actor: User, *, create_mua: bool = F
         raise HTTPException(status_code=403, detail="La creacion de MUA requiere SUPERVISION o ADMIN")
     if read and role == "CARGA":
         raise HTTPException(status_code=403, detail="La consulta de trazabilidad requiere SUPERVISION o ADMIN")
+    if carga_sectors is not None and role == "CARGA" and actor.sector not in carga_sectors:
+        raise HTTPException(status_code=403, detail="CARGA no esta autorizada para esta operacion de trazabilidad")
+    if requires_palero and role == "CARGA" and not is_effective_palero(db, actor.id_persona, on_date or date.today()):
+        raise HTTPException(status_code=403, detail="La carga MUA requiere un puesto Palero vigente")
 
 
 def assert_maintenance_access(db: Session, actor: User) -> None:
@@ -262,6 +286,7 @@ def create_laboratory_analysis(payload: LaboratoryAnalysisInput, actor: User = D
         return analysis_output(db, existing)
     analysis = LaboratoryAnalysis(client_uuid=payload.client_uuid, id_punto=payload.id_punto, fecha_operativa=payload.fecha_operativa, turno_codigo=payload.turno_codigo, instante_muestreo=payload.instante_muestreo, creado_por=actor.id)
     db.add(analysis); db.flush(); store_analysis(db, analysis, payload)
+    record_revision(db, table="analisis_laboratorio", record_id=analysis.id, client_uuid=analysis.client_uuid, revision=analysis.revision, client_version={"revision": analysis.revision, "payload": payload.model_dump(mode="json")}, server_version={"revision": analysis.revision}, record_closed=False)
     write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="ALTA", after=audit_payload(analysis), reason="P21 analisis configurado")
     db.commit(); return analysis_output(db, analysis)
 
@@ -273,9 +298,8 @@ def list_laboratory_analyses(desde: date | None = None, hasta: date | None = Non
     statement = select(LaboratoryAnalysis)
     if role == "CARGA":
         lower = date.today() - timedelta(days=6)
-        if desde and desde < lower:
-            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
-        statement = statement.where(LaboratoryAnalysis.fecha_operativa >= lower)
+        assert_carga_history_scope(db, actor, desde, hasta)
+        statement = statement.where(LaboratoryAnalysis.fecha_operativa.between(lower, date.today()))
     if desde: statement = statement.where(LaboratoryAnalysis.fecha_operativa >= desde)
     if hasta: statement = statement.where(LaboratoryAnalysis.fecha_operativa <= hasta)
     return [analysis_output(db, row) for row in db.scalars(statement.order_by(LaboratoryAnalysis.instante_muestreo.desc()))]
@@ -287,10 +311,14 @@ def update_laboratory_analysis(analysis_id: UUID, payload: LaboratoryAnalysisUpd
     analysis = db.get(LaboratoryAnalysis, analysis_id)
     if analysis is None: raise HTTPException(status_code=404, detail="Analisis inexistente")
     role = get_role(db, actor).nombre
-    if analysis.revision != payload.revision: raise HTTPException(status_code=409, detail="Revision desactualizada")
+    if analysis.revision != payload.revision:
+        record_conflict(db, table="analisis_laboratorio", record_id=analysis.id, client_uuid=analysis.client_uuid, client_version={"revision": payload.revision, "payload": payload.model_dump(mode="json")}, server_version={"revision": analysis.revision, "estado": analysis.estado})
+        db.commit()
+        raise HTTPException(status_code=409, detail="Revision desactualizada; conflicto creado")
     if role == "CARGA" and (analysis.estado != "BORRADOR" or analysis.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores de laboratorio")
     if analysis.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
     before = audit_payload(analysis); store_analysis(db, analysis, payload); analysis.revision += 1; analysis.motivo_correccion = payload.motivo_correccion
+    record_revision(db, table="analisis_laboratorio", record_id=analysis.id, client_uuid=analysis.client_uuid, revision=analysis.revision, client_version={"revision": payload.revision, "payload": payload.model_dump(mode="json")}, server_version={"revision": analysis.revision, "estado": analysis.estado}, record_closed=False)
     write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="CORRECCION", before=before, after=audit_payload(analysis), reason=payload.motivo_correccion)
     db.commit(); return analysis_output(db, analysis)
 
@@ -302,12 +330,15 @@ def close_laboratory_analysis(analysis_id: UUID, payload: LaboratoryActionInput,
     if analysis is None or analysis.estado != "BORRADOR": raise HTTPException(status_code=422, detail="Solo se cierran analisis borrador")
     if get_role(db, actor).nombre == "CARGA" and analysis.creado_por != actor.id: raise HTTPException(status_code=403, detail="CARGA solo cierra sus analisis")
     analysis.estado = "CERRADO"; write_audit(db, user_id=actor.id, table="analisis_laboratorio", record_id=str(analysis.id), action="CIERRE", after=audit_payload(analysis), reason=payload.comentario)
+    analysis.revision += 1
+    record_revision(db, table="analisis_laboratorio", record_id=analysis.id, client_uuid=analysis.client_uuid, revision=analysis.revision, client_version={"revision": analysis.revision, "accion": "cerrar"}, server_version={"revision": analysis.revision, "estado": analysis.estado}, record_closed=False)
     db.commit(); return analysis_output(db, analysis)
 
 
 @router.get("/laboratorio/agenda")
 def get_laboratory_agenda(desde: datetime, hasta: datetime, id_punto: UUID | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     assert_laboratory_access(db, actor)
+    assert_carga_history_scope(db, actor, desde.date(), hasta.date())
     return laboratory_agenda(db, desde, hasta, id_punto)
 
 
@@ -487,7 +518,7 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     existing = db.scalar(select(OperationalRecord).where(OperationalRecord.modulo == module, OperationalRecord.client_uuid == payload.client_uuid))
     if existing is not None:
         return existing
-    data = normalized_data(db, module, payload.datos, payload.fecha_operativa)
+    data = normalized_data(db, module, payload.datos, payload.fecha_operativa, payload.instante_medicion)
     if module == "M1" and data.get("tipo_registro") == "resumen_turno":
         summaries = db.scalars(select(OperationalRecord).where(OperationalRecord.modulo == "M1", OperationalRecord.fecha_operativa == payload.fecha_operativa, OperationalRecord.turno_codigo == payload.turno_codigo, OperationalRecord.sector == sector))
         if any(row.datos.get("tipo_registro") == "resumen_turno" for row in summaries):
@@ -507,7 +538,20 @@ def create_deferred_record(modulo: str, payload: DeferredRecordInput, actor: Use
     )
     db.add(record)
     db.flush()
+    if module == "M8" and payload.crear_parada_asociada:
+        duration = float(record.datos["duracion_min"])
+        stop = OperationalRecord(
+            modulo="M6", sector=sector, client_uuid=uuid4(), estado="BORRADOR", origen_dato=record.origen_dato,
+            fecha_operativa=record.fecha_operativa, turno_codigo=record.turno_codigo, instante_medicion=record.instante_medicion,
+            id_responsable=record.id_responsable, creado_por=actor.id,
+            datos={"causa": "VACIADO_TOLVA", "descripcion": f"Parada asociada a M8 {record.id}", "inicio": record.instante_medicion.isoformat(), "fin": (record.instante_medicion + timedelta(minutes=duration)).isoformat(), "duracion_calculada_horas": str(duration / 60), "id_m8_asociado": str(record.id)},
+        )
+        db.add(stop)
+        db.flush()
+        record.datos = {**record.datos, "id_parada_asociada": str(stop.id)}
+        write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(stop.id), action="ALTA", after=audit_payload(stop), reason="Parada asociada al vaciado de tolva M8")
     evaluate_record(db, record, actor.id)
+    record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": record.revision, "datos": record.datos}, server_version={"revision": record.revision, "estado": record.estado}, record_closed=False)
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="DIGITACION_PAPEL" if payload.origen_dato == "papel_digitado" else "ALTA", after=audit_payload(record), reason="Carga diferida desde formulario en papel" if payload.origen_dato == "papel_digitado" else None)
     db.commit()
     db.refresh(record)
@@ -524,9 +568,8 @@ def list_records(modulo: str, desde: date | None = None, hasta: date | None = No
     statement = select(OperationalRecord).where(OperationalRecord.modulo == module)
     if role == "CARGA":
         lower = date.today() - timedelta(days=6)
-        if desde and desde < lower:
-            raise HTTPException(status_code=403, detail="CARGA solo consulta los ultimos siete dias")
-        statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa >= lower)
+        assert_carga_history_scope(db, actor, desde, hasta)
+        statement = statement.where(OperationalRecord.sector == actor.sector, OperationalRecord.fecha_operativa.between(lower, date.today()))
     if desde: statement = statement.where(OperationalRecord.fecha_operativa >= desde)
     if hasta: statement = statement.where(OperationalRecord.fecha_operativa <= hasta)
     return list(db.scalars(statement.order_by(OperationalRecord.instante_medicion.desc())))
@@ -539,20 +582,25 @@ def correct_record(modulo: str, record_id: UUID, payload: RecordUpdateInput, act
     assert_record_access(db, actor, record.sector, write=True)
     role = get_role(db, actor).nombre
     if record.revision != payload.revision:
-        conflict = SyncConflict(tabla="registro_operativo", id_registro=record.id, client_uuid=record.client_uuid, revision_cliente={"revision": payload.revision, "datos": payload.datos}, version_servidor={"revision": record.revision, "datos": record.datos})
-        db.add(conflict); db.commit()
+        record_conflict(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, client_version={"revision": payload.revision, "datos": payload.datos}, server_version={"revision": record.revision, "estado": record.estado, "datos": record.datos})
+        db.commit()
         raise HTTPException(status_code=409, detail="Revision desactualizada; conflicto creado")
     if role == "CARGA" and (record.estado != "BORRADOR" or record.creado_por != actor.id): raise HTTPException(status_code=403, detail="CARGA solo edita sus borradores")
+    if record.estado == "ANULADO":
+        raise HTTPException(status_code=422, detail="Un registro anulado no puede corregirse")
     if record.estado != "BORRADOR" and (role not in {"SUPERVISION", "ADMIN"} or not payload.motivo_correccion): raise HTTPException(status_code=422, detail="La correccion requiere SUPERVISION/ADMIN y motivo")
     before = audit_payload(record)
     previous_burner = record.datos.get("temperatura_quemador")
     requested_burner = payload.datos.get("temperatura_quemador")
+    burner_change_reason = None
     if previous_burner is not None and requested_burner is not None and str(previous_burner) != str(requested_burner):
         if payload.datos.get("temperatura_quemador_previa") != previous_burner or not payload.datos.get("motivo_cambio_quemador"):
             raise HTTPException(status_code=422, detail="El cambio de quemador requiere valor previo y motivo")
-    record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa), payload.motivo_correccion, record.revision + 1
+        burner_change_reason = payload.datos["motivo_cambio_quemador"]
+    record.datos, record.motivo_correccion, record.revision = normalized_data(db, record.modulo, payload.datos, record.fecha_operativa, record.instante_medicion), payload.motivo_correccion, record.revision + 1
     evaluate_record(db, record, actor.id)
-    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion)
+    record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": payload.revision, "datos": payload.datos}, server_version={"revision": record.revision, "estado": record.estado, "datos": record.datos}, record_closed=False)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CORRECCION", before=before, after=audit_payload(record), reason=payload.motivo_correccion or burner_change_reason)
     db.commit(); db.refresh(record); return record
 
 
@@ -564,7 +612,8 @@ def close_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor
     if record.estado != "BORRADOR": raise HTTPException(status_code=422, detail="Solo se cierran borradores")
     role = get_role(db, actor).nombre
     if role == "CARGA" and record.creado_por != actor.id: raise HTTPException(status_code=403, detail="CARGA solo cierra sus registros")
-    record.estado, record.cerrado_por, record.cerrado_en = "CERRADO", actor.id, datetime.now(timezone.utc)
+    record.estado, record.cerrado_por, record.cerrado_en, record.revision = "CERRADO", actor.id, datetime.now(timezone.utc), record.revision + 1
+    record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": record.revision, "accion": "cerrar"}, server_version={"revision": record.revision, "estado": record.estado}, record_closed=False)
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="CIERRE", after=audit_payload(record), reason=payload.comentario)
     db.commit(); db.refresh(record); return record
 
@@ -574,7 +623,9 @@ def validate_record(modulo: str, record_id: UUID, payload: RecordActionInput, ac
     record = db.get(OperationalRecord, record_id)
     if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
     if record.estado != "CERRADO": raise HTTPException(status_code=422, detail="Solo se validan registros cerrados")
-    record.estado = "VALIDADO"; write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="VALIDACION", after=audit_payload(record), reason=payload.comentario)
+    record.estado, record.revision = "VALIDADO", record.revision + 1
+    record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": record.revision, "accion": "validar"}, server_version={"revision": record.revision, "estado": record.estado}, record_closed=False)
+    write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="VALIDACION", after=audit_payload(record), reason=payload.comentario)
     db.commit(); db.refresh(record); return record
 
 
@@ -583,7 +634,8 @@ def void_record(modulo: str, record_id: UUID, payload: RecordActionInput, actor:
     record = db.get(OperationalRecord, record_id)
     if record is None or record.modulo != modulo.upper(): raise HTTPException(status_code=404, detail="Registro inexistente")
     if record.estado == "ANULADO": raise HTTPException(status_code=422, detail="Registro ya anulado")
-    record.estado, record.motivo_anulacion = "ANULADO", payload.comentario
+    record.estado, record.motivo_anulacion, record.revision = "ANULADO", payload.comentario, record.revision + 1
+    record_revision(db, table="registro_operativo", record_id=record.id, client_uuid=record.client_uuid, revision=record.revision, client_version={"revision": record.revision, "accion": "anular"}, server_version={"revision": record.revision, "estado": record.estado}, record_closed=False)
     write_audit(db, user_id=actor.id, table="registro_operativo", record_id=str(record.id), action="ANULACION", after=audit_payload(record), reason=payload.comentario)
     db.commit(); db.refresh(record); return record
 
@@ -818,8 +870,8 @@ def receive_shift(fecha_operativa: date, turno_codigo: str, sector: str, payload
 def create_mua(payload: MuaCreateInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     assert_traceability_access(db, actor, create_mua=True)
     preparer = db.get(Person, payload.id_preparador)
-    if preparer is None:
-        raise HTTPException(status_code=422, detail="Preparador inexistente")
+    if preparer is None or not preparer.activo or not is_effective_palero(db, preparer.id, payload.fecha_generacion):
+        raise HTTPException(status_code=422, detail="El preparador debe ser una persona activa con puesto Palero vigente")
     prefix = f"MUA-{payload.fecha_generacion:%Y-%m%d}-"
     sequence = sum(1 for code in db.scalars(select(MUA.codigo).where(MUA.codigo.like(f"{prefix}%")))) + 1
     mua = MUA(codigo=f"{prefix}{sequence:02d}", fecha_generacion=payload.fecha_generacion, id_preparador=payload.id_preparador, composicion=[component.model_dump(exclude_none=True) for component in payload.composicion], creado_por=actor.id)
@@ -833,7 +885,7 @@ def create_mua(payload: MuaCreateInput, actor: User = Depends(current_user), db:
 
 @router.get("/mua", response_model=list[MuaListOutput])
 def list_mua(actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, requires_palero=True)
     rows = list(db.scalars(select(MUA).order_by(MUA.fecha_generacion, MUA.codigo)))
     active = list(db.scalars(select(MuaBoxPresence).where(MuaBoxPresence.hasta.is_(None))))
     fifo_by_box: dict[str, list[MuaBoxPresence]] = {}
@@ -844,9 +896,22 @@ def list_mua(actor: User = Depends(current_user), db: Session = Depends(get_db))
     return [{"id": mua.id, "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": mua.id_preparador, "composicion": mua.composicion, "creado_por": mua.creado_por, "presencias_activas": [{"id": presence.id, "id_mua": presence.id_mua, "box": presence.box, "desde": presence.desde, "hasta": presence.hasta, "certeza": presence.certeza, "id_usuario_inicio": presence.id_usuario_inicio, "id_usuario_fin": presence.id_usuario_fin} for presence in active if presence.id_mua == mua.id], "orden_fifo": min((box_rows.index(presence) + 1 for box_rows in fifo_by_box.values() for presence in box_rows if presence.id_mua == mua.id), default=None)} for mua in rows]
 
 
+@router.get("/trazabilidad/preparadores")
+def list_mua_preparers(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    assert_traceability_access(db, actor, create_mua=True)
+    on_date = date.today()
+    statement = select(Person).join(PersonPosition, PersonPosition.id_persona == Person.id).where(
+        Person.activo.is_(True),
+        func.lower(PersonPosition.puesto) == "palero",
+        PersonPosition.vigente_desde <= on_date,
+        or_(PersonPosition.vigente_hasta.is_(None), PersonPosition.vigente_hasta > on_date),
+    ).order_by(Person.apellido_nombre)
+    return [{"id": str(person.id), "apellido_nombre": person.apellido_nombre} for person in db.scalars(statement).unique()]
+
+
 @router.post("/trazabilidad/mua-box", response_model=MuaBoxPeriodOutput, status_code=201)
 def start_mua_box(payload: MuaBoxStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, requires_palero=True, on_date=payload.desde.date())
     if db.get(MUA, payload.id_mua) is None:
         raise HTTPException(status_code=422, detail="La MUA debe existir antes de cargarla en un box")
     row = MuaBoxPresence(id_mua=payload.id_mua, box=payload.box.strip(), desde=trace_time(payload.desde), certeza=payload.certeza, id_usuario_inicio=actor.id)
@@ -871,7 +936,7 @@ def finish_mua_box(period_id: UUID, payload: TemporalCloseInput, actor: User = D
 
 @router.post("/trazabilidad/box-verdes", response_model=BoxVerdesPeriodOutput, status_code=201)
 def start_box_verdes(payload: BoxVerdesStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda"})
     started = trace_time(payload.desde)
     active = list(db.scalars(select(BoxVerdesPeriod).where(BoxVerdesPeriod.hasta.is_(None))))
     for previous in active:
@@ -886,7 +951,7 @@ def start_box_verdes(payload: BoxVerdesStartInput, actor: User = Depends(current
 
 @router.patch("/trazabilidad/box-verdes/{period_id}", response_model=BoxVerdesPeriodOutput)
 def finish_box_verdes(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda"})
     row = db.get(BoxVerdesPeriod, period_id)
     if row is None: raise HTTPException(status_code=404, detail="Periodo box-Verdes inexistente")
     before = audit_payload(row); close_period(row, payload.hasta, actor)
@@ -896,7 +961,7 @@ def finish_box_verdes(period_id: UUID, payload: TemporalCloseInput, actor: User 
 
 @router.post("/trazabilidad/ksider-silo", response_model=KsiderSiloPeriodOutput, status_code=201)
 def start_ksider_silo(payload: KsiderSiloStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda"})
     started, receiver = trace_time(payload.desde), payload.receptor.strip().upper()
     active = list(db.scalars(select(KsiderSiloPeriod).where(KsiderSiloPeriod.receptor == receiver, KsiderSiloPeriod.hasta.is_(None))))
     for previous in active:
@@ -910,7 +975,7 @@ def start_ksider_silo(payload: KsiderSiloStartInput, actor: User = Depends(curre
 
 @router.patch("/trazabilidad/ksider-silo/{period_id}", response_model=KsiderSiloPeriodOutput)
 def finish_ksider_silo(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda"})
     row = db.get(KsiderSiloPeriod, period_id)
     if row is None: raise HTTPException(status_code=404, detail="Periodo K-Sider-silo inexistente")
     before = audit_payload(row); close_period(row, payload.hasta, actor)
@@ -920,7 +985,7 @@ def finish_ksider_silo(period_id: UUID, payload: TemporalCloseInput, actor: User
 
 @router.post("/trazabilidad/silo-linea", response_model=SiloLinePeriodOutput, status_code=201)
 def start_silo_line(payload: SiloLineStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda", "Prensas"})
     if (payload.silo <= 8 and payload.linea != "L7") or (payload.silo >= 9 and payload.linea != "L6"):
         raise HTTPException(status_code=422, detail="El silo no pertenece fisicamente a la linea seleccionada")
     row = SiloLinePeriod(silo=payload.silo, linea=payload.linea, desde=trace_time(payload.desde), id_usuario_inicio=actor.id)
@@ -931,7 +996,7 @@ def start_silo_line(payload: SiloLineStartInput, actor: User = Depends(current_u
 
 @router.patch("/trazabilidad/silo-linea/{period_id}", response_model=SiloLinePeriodOutput)
 def finish_silo_line(period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Molienda", "Prensas"})
     row = db.get(SiloLinePeriod, period_id)
     if row is None: raise HTTPException(status_code=404, detail="Periodo silo-linea inexistente")
     before = audit_payload(row); close_period(row, payload.hasta, actor)
@@ -941,7 +1006,7 @@ def finish_silo_line(period_id: UUID, payload: TemporalCloseInput, actor: User =
 
 @router.post("/lineas/{linea}/producto-formato", response_model=LineProductFormatPeriodOutput, status_code=201)
 def start_line_product_format(linea: str, payload: LineProductFormatStartInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Prensas"})
     if linea != payload.linea:
         raise HTTPException(status_code=422, detail="La linea de la ruta y el periodo deben coincidir")
     started = trace_time(payload.desde)
@@ -957,7 +1022,7 @@ def start_line_product_format(linea: str, payload: LineProductFormatStartInput, 
 
 @router.patch("/lineas/{linea}/producto-formato/{period_id}", response_model=LineProductFormatPeriodOutput)
 def finish_line_product_format(linea: str, period_id: UUID, payload: TemporalCloseInput, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    assert_traceability_access(db, actor)
+    assert_traceability_access(db, actor, carga_sectors={"Prensas"})
     row = db.get(LineProductFormatPeriod, period_id)
     if row is None or row.linea != linea: raise HTTPException(status_code=404, detail="Periodo producto-formato inexistente")
     before = audit_payload(row); close_period(row, payload.hasta, actor)
@@ -971,6 +1036,7 @@ def mua_traceability(mua_id: UUID, actor: User = Depends(current_user), db: Sess
     mua = db.get(MUA, mua_id)
     if mua is None:
         raise HTTPException(status_code=404, detail="MUA inexistente")
+    preparer = db.get(Person, mua.id_preparador)
     edges: list[dict] = []
     presences = list(db.scalars(select(MuaBoxPresence).where(MuaBoxPresence.id_mua == mua.id).order_by(MuaBoxPresence.desde)))
     for presence in presences:
@@ -986,7 +1052,7 @@ def mua_traceability(mua_id: UUID, actor: User = Depends(current_user), db: Sess
                     edges.append({"relacion": "SILO->LINEA", "origen": f"SILO-{ksider.silo}", "destino": silo_line.linea, "desde": silo_line.desde, "hasta": silo_line.hasta, "certeza": "INFERIDA", "id_periodo": str(silo_line.id)})
                     products = [row for row in db.scalars(select(LineProductFormatPeriod).where(LineProductFormatPeriod.linea == silo_line.linea)) if overlaps(silo_line.desde, silo_line.hasta, row.desde, row.hasta)]
                     edges.extend({"relacion": "LINEA->PRODUCTO_FORMATO", "origen": silo_line.linea, "destino": f"{row.producto} / {row.formato}", "desde": row.desde, "hasta": row.hasta, "certeza": "INFERIDA", "id_periodo": str(row.id)} for row in products)
-    return {"mua": {"id": str(mua.id), "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": str(mua.id_preparador), "composicion": mua.composicion}, "aristas": sorted(edges, key=lambda edge: edge["desde"]), "sin_proporciones_inventadas": True}
+    return {"mua": {"id": str(mua.id), "codigo": mua.codigo, "fecha_generacion": mua.fecha_generacion, "id_preparador": str(mua.id_preparador), "preparador": {"id": str(preparer.id), "apellido_nombre": preparer.apellido_nombre, "activo": preparer.activo}, "composicion": mua.composicion}, "aristas": sorted(edges, key=lambda edge: edge["desde"]), "sin_proporciones_inventadas": True}
 
 
 @router.post("/analitica/recalcular", response_model=AnalyticsRebuildOutput)
@@ -998,10 +1064,12 @@ def recalculate_analytics(actor: User = Depends(require_supervision), db: Sessio
 
 @router.get("/kpi")
 def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | None = None, linea: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
-    role = get_role(db, actor).nombre
-    if role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
+    scopes = permission_scopes(db, actor, "M2", "ver")
+    if not scopes:
+        raise HTTPException(status_code=403, detail="Permiso insuficiente")
     statement = select(ShiftFact)
-    if role == "CARGA": statement = statement.where(ShiftFact.contexto_clave == actor.sector, ShiftFact.fecha_operativa >= date.today() - timedelta(days=6))
+    if "todo" not in scopes:
+        statement = statement.where(ShiftFact.contexto_clave == actor.sector, ShiftFact.fecha_operativa >= date.today() - timedelta(days=6))
     if desde: statement = statement.where(ShiftFact.fecha_operativa >= desde)
     if hasta: statement = statement.where(ShiftFact.fecha_operativa <= hasta)
     if turno: statement = statement.where(ShiftFact.turno_codigo == turno)
@@ -1015,7 +1083,7 @@ def get_kpi(desde: date | None = None, hasta: date | None = None, turno: str | N
 @router.get("/kpi/tendencias")
 def kpi_trends(metrica: str, desde: date | None = None, hasta: date | None = None, turno: str | None = None, contexto: str | None = None, actor: User = Depends(current_user), db: Session = Depends(get_db)):
     role = get_role(db, actor).nombre
-    if role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
+    if actor.consulta_remota or role not in {"CARGA", "SUPERVISION", "ADMIN"}: raise HTTPException(status_code=403, detail="Permiso insuficiente")
     statement = select(TemporalMeasurementFact).where(TemporalMeasurementFact.metrica == metrica)
     if role == "CARGA": statement = statement.where(TemporalMeasurementFact.contexto["sector"].astext == actor.sector, TemporalMeasurementFact.fecha_operativa >= date.today() - timedelta(days=6))
     if desde: statement = statement.where(TemporalMeasurementFact.fecha_operativa >= desde)
@@ -1028,6 +1096,8 @@ def kpi_trends(metrica: str, desde: date | None = None, hasta: date | None = Non
 
 @router.get("/kpi/pareto-paradas")
 def stoppage_pareto(actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    if actor.consulta_remota:
+        raise HTTPException(status_code=403, detail="Consulta remota solo puede acceder al dashboard KPI")
     payload = get_kpi(actor=actor, db=db)
     totals: dict[str, float] = {}
     for fact in payload["hechos"]:

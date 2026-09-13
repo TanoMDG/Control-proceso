@@ -234,10 +234,13 @@ class DeferredRecordInput(BaseModel):
     instante_medicion: datetime
     id_responsable: UUID | None = None
     datos: dict = Field(default_factory=dict)
+    crear_parada_asociada: bool = False
     origen_dato: str = Field(default="papel_digitado", pattern="^(digital_directo|papel_digitado)$")
 
 
 class RecordUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     revision: int = Field(ge=1)
     datos: dict
     motivo_correccion: str | None = Field(default=None, max_length=300)
@@ -407,6 +410,8 @@ class MaintenanceProductFormatVersionOutput(ORMModel):
 
 
 class MaintenanceRecordInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     client_uuid: UUID = Field(default_factory=uuid4)
     fecha_operativa: date
     turno_codigo: str = Field(min_length=1, max_length=30)

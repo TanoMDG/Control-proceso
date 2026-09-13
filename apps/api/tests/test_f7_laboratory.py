@@ -37,7 +37,7 @@ def test_f7_configurable_analysis_sieves_limits_agenda_and_compliance(client, ad
         assert db.scalar(select(AppliedLimit).where(AppliedLimit.tabla_origen == "analisis_laboratorio_resultado")).resultado == "FUERA_DE_RANGO"
         assert db.scalar(select(LaboratoryDeviationEvent)).id_desvio == "D01"
         assert str(db.scalar(select(LaboratoryGranulometryResult)).id_tamiz) == sieve["id"]
-    agenda = client.get(f"/api/v1/laboratorio/agenda?desde=2026-01-02T00:00:00Z&hasta=2026-01-03T00:00:00Z&id_punto={point['id']}", headers=auth(lab_token))
+    agenda = client.get(f"/api/v1/laboratorio/agenda?desde=2026-01-02T00:00:00Z&hasta=2026-01-03T00:00:00Z&id_punto={point['id']}", headers=auth(admin_token))
     assert agenda.status_code == 200
     assert agenda.json()["cumplimiento"]["esperados"] == 6
     assert agenda.json()["cumplimiento"]["realizados"] == 2

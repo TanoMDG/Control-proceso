@@ -9,13 +9,36 @@ from app.models.core import Permission, Person, Role, User
 from app.services.security import hash_password
 
 BASE_PERMISSIONS = {
-    "CARGA": [("M0", "ver", "propio_sector"), ("M0", "crear", "propio_sector"), ("M11", "ver", "propio_sector"), ("M12", "ver", "propio_sector")],
-    "SUPERVISION": [("M0", "ver", "todo"), ("M0", "crear", "todo"), ("M11", "ver", "todo"), ("M12", "ver", "todo"), ("M15", "ver", "todo")],
+    "CARGA": [
+        ("M0", action, "propio_sector") for action in ("ver", "crear", "editar", "cerrar", "tratar", "verificar")
+    ] + [
+        (module, action, "propio_sector")
+        for module, actions in {
+            "M2": ("ver",), "M4": ("ver", "crear", "editar"), "M7": ("ver", "crear", "editar"),
+            "M11": ("ver",), "M12": ("ver",), "M13": ("ver", "crear", "editar", "cerrar", "tratar", "verificar"),
+        }.items()
+        for action in actions
+    ],
+    "SUPERVISION": [
+        (module, action, "todo")
+        for module, actions in {
+            "M0": ("ver", "crear", "editar", "cerrar", "validar", "anular", "tratar", "verificar"),
+            "M2": ("ver", "recalcular"), "M4": ("ver", "crear", "editar"), "M7": ("ver", "crear", "editar"),
+            "M11": ("ver",), "M12": ("ver",), "M13": ("ver", "crear", "editar", "cerrar", "tratar", "verificar"),
+            "M14": ("ver",), "M15": ("ver",),
+        }.items()
+        for action in actions
+    ],
     "ADMIN": [
-        ("M0", "ver", "todo"), ("M0", "crear", "todo"),
-        ("M11", "ver", "todo"), ("M11", "crear", "todo"), ("M11", "editar", "todo"),
-        ("M12", "ver", "todo"), ("M12", "crear", "todo"), ("M12", "editar", "todo"),
-        ("M15", "ver", "todo"), ("M15", "crear", "todo"), ("M15", "editar", "todo"),
+        (module, action, "todo")
+        for module, actions in {
+            "M0": ("ver", "crear", "editar", "cerrar", "validar", "anular", "tratar", "verificar"),
+            "M2": ("ver", "recalcular"), "M4": ("ver", "crear", "editar"), "M7": ("ver", "crear", "editar"),
+            "M11": ("ver", "crear", "editar"), "M12": ("ver", "crear", "editar"),
+            "M13": ("ver", "crear", "editar", "cerrar", "tratar", "verificar"), "M14": ("ver", "crear", "editar"),
+            "M15": ("ver", "crear", "editar", "administrar"),
+        }.items()
+        for action in actions
     ],
 }
 

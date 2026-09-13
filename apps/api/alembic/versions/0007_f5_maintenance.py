@@ -12,7 +12,13 @@ depends_on = None
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
-    op.create_table(
+    tables = set(sa.inspect(op.get_bind()).get_table_names())
+
+    def create_table_if_missing(name: str, *args: object) -> None:
+        if name not in tables:
+            op.create_table(name, *args)
+
+    create_table_if_missing(
         "equipo_mantenimiento",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("codigo", sa.String(40), unique=True, nullable=False),
@@ -25,7 +31,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("(activo = true AND fecha_baja IS NULL) OR (activo = false AND fecha_baja IS NOT NULL)", name="ck_equipo_mantenimiento_baja_logica"),
     )
-    op.create_table(
+    create_table_if_missing(
         "producto_mantenimiento",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("codigo", sa.String(40), unique=True, nullable=False),
@@ -36,7 +42,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("(activo = true AND fecha_baja IS NULL) OR (activo = false AND fecha_baja IS NOT NULL)", name="ck_producto_mantenimiento_baja_logica"),
     )
-    op.create_table(
+    create_table_if_missing(
         "producto_formato_mantenimiento_version",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_producto", uuid, sa.ForeignKey("producto_mantenimiento.id", ondelete="RESTRICT"), nullable=False),
@@ -49,8 +55,9 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("vigente_hasta_exclusiva IS NULL OR vigente_hasta_exclusiva > vigente_desde", name="ck_producto_formato_mantenimiento_intervalo"),
     )
-    op.create_index("ix_producto_formato_mantenimiento_vigencia", "producto_formato_mantenimiento_version", ["id_producto", "id_formato", "vigente_desde"])
-    op.create_table(
+    if "producto_formato_mantenimiento_version" not in tables:
+        op.create_index("ix_producto_formato_mantenimiento_vigencia", "producto_formato_mantenimiento_version", ["id_producto", "id_formato", "vigente_desde"])
+    create_table_if_missing(
         "registro_mantenimiento",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("client_uuid", uuid, unique=True, nullable=False),
@@ -69,7 +76,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("fin IS NULL OR fin >= inicio", name="ck_registro_mantenimiento_intervalo"),
     )
-    op.create_table(
+    create_table_if_missing(
         "correlacion_mantenimiento",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_registro_mantenimiento", uuid, sa.ForeignKey("registro_mantenimiento.id", ondelete="CASCADE"), nullable=False),

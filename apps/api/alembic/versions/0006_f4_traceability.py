@@ -12,7 +12,13 @@ depends_on = None
 
 def upgrade() -> None:
     uuid = postgresql.UUID(as_uuid=True)
-    op.create_table(
+    tables = set(sa.inspect(op.get_bind()).get_table_names())
+
+    def create_table_if_missing(name: str, *args: object) -> None:
+        if name not in tables:
+            op.create_table(name, *args)
+
+    create_table_if_missing(
         "mua",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("codigo", sa.String(20), unique=True, nullable=False),
@@ -31,7 +37,7 @@ def upgrade() -> None:
         sa.Column("id_usuario_fin", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT")),
         sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_intervalo"),
     ]
-    op.create_table(
+    create_table_if_missing(
         "mua_box_presencia",
         sa.Column("id", uuid, primary_key=True),
         sa.Column("id_mua", uuid, sa.ForeignKey("mua.id", ondelete="RESTRICT"), nullable=False),
@@ -44,39 +50,44 @@ def upgrade() -> None:
         sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_mua_box_intervalo"),
         sa.CheckConstraint("certeza IN ('CONFIRMADA', 'POTENCIAL', 'INFERIDA')", name="ck_mua_box_certeza"),
     )
-    op.create_index("ix_mua_box_presencia_activa", "mua_box_presencia", ["box", "hasta"])
-    op.create_table(
+    if "mua_box_presencia" not in tables:
+        op.create_index("ix_mua_box_presencia_activa", "mua_box_presencia", ["box", "hasta"])
+    create_table_if_missing(
         "box_verdes_periodo",
         sa.Column("id", uuid, primary_key=True), sa.Column("box", sa.String(30), nullable=False),
         sa.Column("desde", sa.DateTime(timezone=True), nullable=False), sa.Column("hasta", sa.DateTime(timezone=True)),
         sa.Column("id_usuario_inicio", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False), sa.Column("id_usuario_fin", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT")),
         sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_box_verdes_intervalo"),
     )
-    op.create_index("ix_box_verdes_activa", "box_verdes_periodo", ["hasta"])
-    op.create_table(
+    if "box_verdes_periodo" not in tables:
+        op.create_index("ix_box_verdes_activa", "box_verdes_periodo", ["hasta"])
+    create_table_if_missing(
         "ksider_silo_periodo",
         sa.Column("id", uuid, primary_key=True), sa.Column("receptor", sa.String(30), server_default="K-SIDER", nullable=False), sa.Column("silo", sa.Integer(), nullable=False),
         sa.Column("desde", sa.DateTime(timezone=True), nullable=False), sa.Column("hasta", sa.DateTime(timezone=True)),
         sa.Column("id_usuario_inicio", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False), sa.Column("id_usuario_fin", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT")),
         sa.CheckConstraint("silo BETWEEN 1 AND 16", name="ck_ksider_silo_numero"), sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_ksider_silo_intervalo"),
     )
-    op.create_index("ix_ksider_silo_activa", "ksider_silo_periodo", ["receptor", "hasta"])
-    op.create_table(
+    if "ksider_silo_periodo" not in tables:
+        op.create_index("ix_ksider_silo_activa", "ksider_silo_periodo", ["receptor", "hasta"])
+    create_table_if_missing(
         "silo_linea_periodo",
         sa.Column("id", uuid, primary_key=True), sa.Column("silo", sa.Integer(), nullable=False), sa.Column("linea", sa.String(10), nullable=False),
         sa.Column("desde", sa.DateTime(timezone=True), nullable=False), sa.Column("hasta", sa.DateTime(timezone=True)),
         sa.Column("id_usuario_inicio", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False), sa.Column("id_usuario_fin", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT")),
         sa.CheckConstraint("silo BETWEEN 1 AND 16", name="ck_silo_linea_numero"), sa.CheckConstraint("linea IN ('L6', 'L7')", name="ck_silo_linea_fisica"), sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_silo_linea_intervalo"),
     )
-    op.create_index("ix_silo_linea_activa", "silo_linea_periodo", ["silo", "hasta"])
-    op.create_table(
+    if "silo_linea_periodo" not in tables:
+        op.create_index("ix_silo_linea_activa", "silo_linea_periodo", ["silo", "hasta"])
+    create_table_if_missing(
         "linea_producto_formato_periodo",
         sa.Column("id", uuid, primary_key=True), sa.Column("linea", sa.String(10), nullable=False), sa.Column("producto", sa.String(80), nullable=False), sa.Column("formato", sa.String(80), nullable=False),
         sa.Column("desde", sa.DateTime(timezone=True), nullable=False), sa.Column("hasta", sa.DateTime(timezone=True)),
         sa.Column("id_usuario_inicio", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT"), nullable=False), sa.Column("id_usuario_fin", uuid, sa.ForeignKey("usuario.id", ondelete="RESTRICT")),
         sa.CheckConstraint("linea IN ('L6', 'L7')", name="ck_linea_producto_linea"), sa.CheckConstraint("hasta IS NULL OR hasta > desde", name="ck_linea_producto_intervalo"),
     )
-    op.create_index("ix_linea_producto_activa", "linea_producto_formato_periodo", ["linea", "hasta"])
+    if "linea_producto_formato_periodo" not in tables:
+        op.create_index("ix_linea_producto_activa", "linea_producto_formato_periodo", ["linea", "hasta"])
 
 
 def downgrade() -> None:
