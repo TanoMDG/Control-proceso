@@ -83,6 +83,23 @@ test("real credentials expose role and remote navigation boundaries", async ({ p
   await directContext.close();
 });
 
+test("v1.0.1 names the operational and administration screens", async ({ page }) => {
+  await login(page, "e2e-molienda");
+  const nav = page.getByRole("navigation", { name: "Navegacion principal" });
+  await expect(nav.getByRole("button", { name: "P02-P12 - Operacion e historial", exact: true })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "P01 - Inicio", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cerrar sesion" }).click();
+
+  await login(page, "e2e-admin");
+  await expect(nav.getByRole("button", { name: "P17-P25 - Administracion", exact: true })).toBeVisible();
+  await nav.getByRole("button", { name: "P17-P25 - Administracion", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "P17-P25 · Administracion", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "P25 · parametros", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "P25 · parametros", exact: true }).click();
+  await page.getByRole("button", { name: "Consultar P25 · parametros", exact: true }).click();
+  await expect(page.getByText("v1.0.1").first()).toBeVisible();
+});
+
 test("M1 offers only consumable boxes and surfaces the D01 warning flow", async ({ page }) => {
   await login(page, "e2e-molienda");
   await operation(page);
