@@ -13,6 +13,10 @@ Source: `Especificacion_Tecnica_Consolidada_v1_4_FINAL.docx`, v1.4 FINAL, sectio
 
 No CP01-CP70 item is assigned to F8 or F9 by section 14. F6 commissioning is external to these CPs and remains outside this matrix. CP50 is implemented as a tested negative architectural rule.
 
+## v1.0.1 Baseline Evidence
+
+v1.0.1 preserves every CP01-CP70 status and adds the source-backed configuration baseline without changing their acceptance criteria. `tests/test_v101_baseline.py` verifies fresh installation, v1.0.0 upgrade, idempotency, provenance, reconciliation, and non-overwrite behavior. `apps/web/e2e/roles.spec.ts::v1.0.1 names the operational and administration screens` verifies the operational naming and ADMIN baseline query through the real Docker stack.
+
 ## CP01-CP35
 
 | CP | Status | Exact acceptance criterion | Evidence test ID/name or individual pending reason |

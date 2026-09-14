@@ -6,9 +6,15 @@ F0 usa PostgreSQL como fuente transaccional, FastAPI para reglas y autorizacion,
 
 Los timestamps se almacenan con zona horaria UTC. La fecha operativa se conservara como dato propio de los registros operativos en las fases siguientes. Los intervalos de vigencia se implementan como `[vigente_desde, vigente_hasta_exclusiva)`: el limite superior no pertenece a la version. Esta convencion tecnica elimina solapamientos en el limite entre dos versiones consecutivas.
 
-## Datos maestros
+## Datos maestros y baseline
 
-Las migraciones no contienen datos maestros productivos. El primer ADMIN se crea mediante comando explicito con legajo, nombre, usuario y contrasena provistos por el despliegue. Los roles operativos y sus permisos base se crean con ese comando porque son configuracion funcional definida por la especificacion, no datos industriales del Excel.
+`0013_v101_baseline` es la excepcion controlada: materializa la configuracion aprobada de v1.0.1 y conserva los nombres y SHA-256 del DOCX/XLSX de origen en `configuracion_baseline`. El reporte asociado se genera durante la misma transaccion y, por entidad, conserva conteos reales de `expected`, `inserted`, `already_existing`, `updated`, `omitted`, `pending` y `conflicts`.
+
+La migracion inserta solo claves de negocio ausentes con `ON CONFLICT DO NOTHING`; no tiene rutas `UPDATE`. Una fila preexistente igual se informa como `already_existing`, una distinta como `conflicts`, y una version de limite o parametro existente se informa como `omitted`. Por ello una configuracion posterior a v1.0.0 no se reemplaza al actualizar.
+
+`system.baseline.v101` es un usuario ADMIN tecnico, inactivo y sin credenciales utilizables, creado solo para atribuir las versiones iniciales. No es un usuario operativo. El primer ADMIN humano sigue creandose mediante el comando explicito con datos autorizados por el despliegue.
+
+La baseline no convierte en datos inventados los pendientes productivos: responsables de mantenimiento, molinillo de rechazo, productos/formato y calendario, PLC/tags y politicas reales quedan con estado `pending`. Las altas y modificaciones posteriores se realizan mediante servicios ADMIN y escriben `auditoria`; no mutan la procedencia ni el reporte historico de la baseline.
 
 ## Auditoria e integridad
 
@@ -38,6 +44,6 @@ Cada lectura buena genera un `hecho_medicion_temporal` de origen `plc_lectura_cr
 
 ## F7: laboratorio configurable
 
-`laboratorio_punto_muestreo`, `laboratorio_determinacion`, `laboratorio_unidad`, `laboratorio_punto_determinacion` y `laboratorio_frecuencia_control` son maestros de configuracion vacios. Sus filas con vigencia, no valores por defecto de la aplicacion, definen que puede registrar P21 y que espera P22. Una determinacion es numerica o granulometrica; `laboratorio_configuracion_tamiz` hace explicita la torre permitida por punto/determinacion.
+`laboratorio_punto_muestreo`, `laboratorio_determinacion`, `laboratorio_unidad`, `laboratorio_punto_determinacion` y `laboratorio_frecuencia_control` son maestros versionados. La baseline v1.0.1 materializa las filas aprobadas por fuente; sus vigencias, no valores por defecto de la aplicacion, definen que puede registrar P21 y que espera P22. Una determinacion es numerica o granulometrica; `laboratorio_configuracion_tamiz` hace explicita la torre permitida por punto/determinacion.
 
 `analisis_laboratorio` conserva UUID de idempotencia, revision/estado, instante de muestra y vinculos declarados opcionales a MUA, stock M3, proceso, silo y producto activo. Cada resultado numerico retiene la version de limite aplicada en `registro_limite_aplicado`; `evento_desvio_laboratorio` existe solo si ese limite tiene un plan de reaccion configurado. Las ocurrencias faltantes de agenda no crean ninguno de los dos. El recalculo proyecta las mediciones y conteos F7 sin convertir los hechos analiticos en fuente de verdad.

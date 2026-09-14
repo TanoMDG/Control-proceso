@@ -17,7 +17,13 @@ docker compose ps
 
 La API queda en `http://localhost:8000/api/v1/health` y la web en `http://localhost:5173`.
 
-Las migraciones Alembic se aplican al iniciar el contenedor API. No se insertan personas, catalogos, limites ni otros datos productivos.
+Las migraciones Alembic se aplican al iniciar el contenedor API. `0013_v101_baseline` instala la configuracion fuente de v1.0.1; no crea usuarios operativos ni sustituye configuracion que ya exista.
+
+## Baseline v1.0.1
+
+La baseline es una carga tecnica trazable de los documentos fuente versionados: guarda nombre y SHA-256 del DOCX/XLSX, catalogos, personas, limites, planes, configuracion de laboratorio y su reporte de reconciliacion en `GET /api/v1/configuracion/baseline` (ADMIN). Cada entidad informa `expected`, `inserted`, `already_existing`, `updated`, `omitted`, `pending` y `conflicts` con los resultados reales de la migracion.
+
+La cuenta tecnica inactiva `system.baseline.v101` solo atribuye las versiones tecnicas iniciales; no permite iniciar sesion ni representa una persona operativa. La migracion solo inserta claves ausentes y nunca ejecuta `UPDATE`: una configuracion creada o modificada despues de v1.0.0 se conserva, se refleja como conflicto u omision y sus cambios posteriores se auditan normalmente.
 
 ## Primer administrador
 
@@ -81,7 +87,7 @@ F6 software implementado. Puesta en marcha PLC pendiente de datos reales de plan
 
 ## Laboratorio (F7 M17)
 
-P21 registra analisis de laboratorio mediante `POST /api/v1/laboratorio/analisis`; P22 consulta agenda y cumplimiento mediante `GET /api/v1/laboratorio/agenda`. ADMIN configura, sin datos industriales precargados, las unidades, puntos de muestreo, determinaciones numericas o granulometricas, limites existentes, frecuencias versionadas y tamices por torre. Las determinaciones como humedad, residuo, hierro, densidad, fluidez y resistencias solo aparecen cuando esa configuracion existe.
+P21 registra analisis de laboratorio mediante `POST /api/v1/laboratorio/analisis`; P22 consulta agenda y cumplimiento mediante `GET /api/v1/laboratorio/agenda`. La baseline v1.0.1 carga la configuracion fuente aprobada; ADMIN administra sus unidades, puntos de muestreo, determinaciones numericas o granulometricas, limites existentes, frecuencias versionadas y tamices por torre. Las determinaciones como humedad, residuo, hierro, densidad, fluidez y resistencias solo aparecen cuando esa configuracion existe.
 
 Cada analisis conserva los vinculos opcionales declarados a MUA, registro de stock M3, proceso, silo y producto. Los resultados numericos conservan la version de limite aplicada y crean un desvio solo si la regla/plan de reaccion configurado lo indica. La granulometria exige exactamente los tamices configurados para esa determinacion y punto; no hay mallas implicitas.
 
@@ -118,8 +124,8 @@ La validacion es dry-run: no importa ni modifica datos. Consulte `docs/data-impo
 
 Use archivos `.env` diferentes para desarrollo, prueba y produccion. `POSTGRES_PASSWORD`, `POSTGRES_TEST_PASSWORD`, `DATABASE_URL`, `JWT_SECRET` y `TEST_JWT_SECRET` son obligatorios en Compose; `.env.example` contiene solo marcadores que deben reemplazarse. La API y la web se ejecutan sin privilegios, con filesystem de solo lectura, sin capacidades Linux adicionales y sin secretos por defecto. Produccion debe configurar HTTPS, respaldos, RPO/RTO, expiracion de sesion/PIN y MFA de ADMIN conforme a la politica de Soporte, que la especificacion deja pendiente.
 
-## v1.0.0: Configuracion Productiva Pendiente
+## Configuracion Productiva Pendiente
 
-La operacion manual de v1.0.0 esta disponible sin commissioning PLC. Antes del despliegue productivo deben configurarse, sin modificar el software, los responsables reales de mantenimiento, la identificacion definitiva del molinillo de rechazo, maestros, limites, frecuencias y mallas de laboratorio, relaciones producto-formato y calendario/parametros operativos reales.
+La baseline v1.0.1 deja pendientes los responsables reales de mantenimiento, la identificacion definitiva del molinillo de rechazo, productos y relaciones producto-formato, y el calendario/PLC/politicas reales. Antes del despliegue productivo deben configurarse por los flujos ADMIN auditados, sin modificar la baseline.
 
 El commissioning PLC de solo lectura tambien permanece pendiente: red, protocolo, tags, escalas, unidades, frecuencias, calidad y autorizacion de lectura. Las politicas corporativas de despliegue, respaldo, continuidad y seguridad son responsabilidades organizacionales de produccion. Ninguno de estos puntos invalida los flujos manuales de v1.0.0.
