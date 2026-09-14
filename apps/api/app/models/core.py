@@ -514,6 +514,27 @@ class AuditLog(Base):
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class BaselineConfiguration(Base):
+    __tablename__ = "configuracion_baseline"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    version: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    fuente_docx: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256_docx: Mapped[str] = mapped_column(String(64), nullable=False)
+    fuente_xlsx: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256_xlsx: Mapped[str] = mapped_column(String(64), nullable=False)
+    resumen: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BaselineReconciliation(Base):
+    __tablename__ = "reconciliacion_baseline"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    id_baseline: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("configuracion_baseline.id", ondelete="RESTRICT"), unique=True, nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False)
+    reporte: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    generado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class SyncRevision(Base):
     __tablename__ = "revision_sincronizacion"
     id: Mapped[uuid.UUID] = uuid_pk()

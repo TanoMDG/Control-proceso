@@ -11,7 +11,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.core import AnalyticsRun, AuditLog, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, LaboratoryAnalysis, LaboratoryAnalysisResult, LaboratoryConfigurationSieve, LaboratoryDetermination, LaboratoryDeviationEvent, LaboratoryFrequency, LaboratoryPointDetermination, LaboratorySamplePoint, LaboratorySieve, LaboratoryUnit, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, PlcAcquisitionStatus, PlcReadSource, PlcReadTag, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
+from app.models.core import AnalyticsRun, AuditLog, BaselineConfiguration, BaselineReconciliation, BoxVerdesPeriod, Catalog, DeviationEvent, DeviationHistory, ImportResult, ImportRun, KsiderSiloPeriod, LaboratoryAnalysis, LaboratoryAnalysisResult, LaboratoryConfigurationSieve, LaboratoryDetermination, LaboratoryDeviationEvent, LaboratoryFrequency, LaboratoryPointDetermination, LaboratorySamplePoint, LaboratorySieve, LaboratoryUnit, Limit, LimitVersion, LineProductFormatPeriod, MUA, MaintenanceCorrelation, MaintenanceEquipment, MaintenanceProduct, MaintenanceProductFormatVersion, MaintenanceRecord, MuaBoxPresence, OperationalRecord, Permission, Person, PersonPosition, PlcAcquisitionStatus, PlcReadSource, PlcReadTag, ProductionCalendar, Role, ShiftFact, ShiftReceipt, SiloLinePeriod, SyncConflict, SystemParameterVersion, TemporalMeasurementFact, User
 from app.schemas import (AnalyticsRebuildOutput, AuditOutput, BoxVerdesPeriodOutput, BoxVerdesStartInput, CalendarInput, CalendarOutput, CatalogInput, CatalogOutput, CatalogPatch, DeferredRecordInput, DeviationOutput, ImportPreview, KsiderSiloPeriodOutput, KsiderSiloStartInput, LaboratoryActionInput, LaboratoryAnalysisInput, LaboratoryAnalysisOutput, LaboratoryAnalysisUpdateInput, LaboratoryDeterminationInput, LaboratoryDeterminationOutput, LaboratoryFrequencyInput, LaboratoryMasterInput, LaboratoryMasterOutput, LaboratoryPointDeterminationInput, LaboratoryPointInput, LaboratoryPointOutput, LaboratorySieveConfigurationInput, LaboratorySieveInput, LaboratorySieveOutput, LimitInput, LimitOutput, LimitVersionInput, LimitVersionOutput, LineProductFormatPeriodOutput, LineProductFormatStartInput, LoginInput, MaintenanceEquipmentInput, MaintenanceEquipmentOutput, MaintenanceEquipmentPatch, MaintenanceProductFormatVersionInput, MaintenanceProductFormatVersionOutput, MaintenanceProductInput, MaintenanceProductOutput, MaintenanceProductPatch, MaintenanceRecordInput, MaintenanceRecordOutput, MuaBoxPeriodOutput, MuaBoxStartInput, MuaCreateInput, MuaListOutput, MuaOutput, OperationalRecordOutput, ParameterInput, PermissionInput, PersonInput, PersonOutput, PersonPatch, PlcAcquisitionStatusOutput, PlcReadSourceInput, PlcReadSourceOutput, PlcReadSourcePatch, PlcReadTagInput, PlcReadTagOutput, PlcReadTagPatch, PositionInput, RecordActionInput, RecordUpdateInput, RoleOutput, ShiftReceiptInput, SiloLinePeriodOutput, SiloLineStartInput, SyncConflictOutput, SyncConflictResolution, TemporalCloseInput, TemporalPeriodOutput, TokenOutput, UserInput, UserOutput, UserPatch)
 from app.services.audit import write_audit
 from app.services.importer import validate_excel_source
@@ -1374,6 +1374,26 @@ def list_calendar(desde: date, hasta: date, _: User = Depends(require_supervisio
 @router.get("/auditoria", response_model=list[AuditOutput])
 def list_audit(_: User = Depends(require_supervision), db: Session = Depends(get_db)):
     return list(db.scalars(select(AuditLog).order_by(AuditLog.creado_en.desc()).limit(500)))
+
+
+@router.get("/configuracion/baseline")
+def get_baseline_configuration(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    baseline = db.scalar(select(BaselineConfiguration).order_by(BaselineConfiguration.creado_en.desc()))
+    if baseline is None:
+        raise HTTPException(status_code=404, detail="No hay baseline de configuracion instalado")
+    reconciliation = db.scalar(select(BaselineReconciliation).where(BaselineReconciliation.id_baseline == baseline.id))
+    return {
+        "baseline": {
+            "version": baseline.version,
+            "fuente_docx": baseline.fuente_docx,
+            "sha256_docx": baseline.sha256_docx,
+            "fuente_xlsx": baseline.fuente_xlsx,
+            "sha256_xlsx": baseline.sha256_xlsx,
+            "resumen": baseline.resumen,
+            "creado_en": baseline.creado_en,
+        },
+        "reconciliacion": None if reconciliation is None else {"estado": reconciliation.estado, "reporte": reconciliation.reporte, "generado_en": reconciliation.generado_en},
+    }
 
 
 @router.post("/importaciones/preview", response_model=ImportPreview)
